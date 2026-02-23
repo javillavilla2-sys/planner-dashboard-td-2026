@@ -119,6 +119,84 @@ def inject_css():
 
       /* Hide streamlit branding */
       #MainMenu, footer, header { visibility: hidden; }
+
+      /* ── VISTA ESTRATÉGICA ─────────────────────────────────────────────── */
+
+      /* Tarjeta de objetivo estratégico */
+      .obj-card {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 20px 24px;
+        box-shadow: 0 1px 6px rgba(0,0,0,.06);
+        position: relative;
+        overflow: hidden;
+        transition: box-shadow .2s;
+      }
+      .obj-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,.10); }
+      .obj-card-accent {
+        position: absolute; top: 0; left: 0;
+        width: 4px; height: 100%;
+        border-radius: 14px 0 0 14px;
+      }
+      .obj-label {
+        font-size: 10px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 1px; color: #8fa0b8; margin-bottom: 6px;
+      }
+      .obj-pct {
+        font-size: 2.6rem; font-weight: 900; line-height: 1;
+        margin-bottom: 4px;
+      }
+      .obj-meta { font-size: 11px; color: #94a3b8; margin-top: 6px; }
+
+      /* Semáforo badge */
+      .badge-green  { display:inline-block; background:#dcfce7; color:#15803d;
+                      font-size:11px; font-weight:700; padding:3px 10px;
+                      border-radius:20px; }
+      .badge-yellow { display:inline-block; background:#fef9c3; color:#a16207;
+                      font-size:11px; font-weight:700; padding:3px 10px;
+                      border-radius:20px; }
+      .badge-red    { display:inline-block; background:#fee2e2; color:#b91c1c;
+                      font-size:11px; font-weight:700; padding:3px 10px;
+                      border-radius:20px; }
+
+      /* Panel de configuración editable */
+      .config-panel {
+        background: #f8faff;
+        border: 1px solid #dbeafe;
+        border-radius: 12px;
+        padding: 20px 24px;
+        margin-bottom: 1rem;
+      }
+      .config-title {
+        font-size: 12px; font-weight: 700; text-transform: uppercase;
+        letter-spacing: 1px; color: #3b82f6; margin-bottom: 12px;
+        display: flex; align-items: center; gap: 8px;
+      }
+
+      /* Indicador global */
+      .global-kpi {
+        background: linear-gradient(135deg, #1d6af5 0%, #0891b2 100%);
+        border-radius: 16px;
+        padding: 28px 32px;
+        color: white;
+        text-align: center;
+        box-shadow: 0 4px 20px rgba(29,106,245,.25);
+      }
+      .global-kpi-label { font-size: 12px; font-weight: 600; opacity: .8;
+                          text-transform: uppercase; letter-spacing: 1px; }
+      .global-kpi-value { font-size: 4rem; font-weight: 900; line-height: 1.1; }
+      .global-kpi-sub   { font-size: 12px; opacity: .7; margin-top: 4px; }
+
+      /* Nav pills sidebar */
+      .nav-pill {
+        display: block; width: 100%; text-align: left;
+        padding: 10px 14px; border-radius: 8px; margin-bottom: 4px;
+        font-size: 13px; font-weight: 600; cursor: pointer;
+        border: none; background: transparent; transition: all .15s;
+      }
+      .nav-pill.active { background: #eff6ff; color: #1d6af5; }
+      .nav-pill:hover  { background: #f1f5f9; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -538,6 +616,7 @@ def chart_progreso_dona(kpis: dict) -> go.Figure:
             x=0.5, xanchor="center",
             y=-0.08, yanchor="top",
             font=dict(size=11, family="Inter, sans-serif"),
+            itemgap=12,
         ),
         margin=dict(l=10, r=10, t=10, b=10),
         height=290,
@@ -714,7 +793,7 @@ def chart_carga_por_especialista(wl: pd.DataFrame) -> go.Figure:
         yaxis=dict(title=None, showgrid=True, gridcolor="#f1f5f9", zeroline=False,
                    tickfont=dict(size=11, color="#8fa0b8")),
         legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center",
-                    font=dict(size=11, family="Inter, sans-serif")),
+                    font=dict(size=11, family="Inter, sans-serif"), itemgap=16),
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(l=10, r=20, t=8, b=40),
         height=310,
@@ -1170,75 +1249,869 @@ def create_dashboard(df: pd.DataFrame, metadata: dict):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 11. INICIALIZACIÓN DE SESSION STATE ESTRATÉGICO
+# ─────────────────────────────────────────────────────────────────────────────
+def init_session_state():
+    """Inicializa los valores por defecto de metas estratégicas en session_state.
+    Solo se ejecuta una vez; valores editables desde la UI sin tocar el código."""
+
+    defaults = {
+        # ── Eficiencia Operativa ───────────────────────────────────────────────
+        "eo_meta":        20,      # Meta trimestral procesos
+        "eo_completados": 0,       # Procesos completados
+
+        # ── Datos Confiables ───────────────────────────────────────────────────
+        "dc_meta": 5,              # Meta procesos automáticos
+        "dc_tabla": pd.DataFrame({
+            "Proceso":   ["Juan Montoya", "Ventas VP"],
+            "% Avance":  [100, 60],
+        }),
+
+        # ── Excelencia ERP ─────────────────────────────────────────────────────
+        "erp_meta": 10,            # Meta mejoras ERP
+        "erp_tabla": pd.DataFrame({
+            "Mejora ERP": ["Módulo de compras", "Cierre contable", "Reportes"],
+            "% Avance":   [80, 50, 30],
+        }),
+
+        # ── Integración ────────────────────────────────────────────────────────
+        "int_meta":        5,      # Meta integraciones
+        "int_completadas": 0,      # Completadas
+
+        # ── Seguridad de la Información ────────────────────────────────────────
+        "seg_pct_cookies":    0.0, # % ajuste cookies
+        "seg_meta_conting":   10,  # Meta procesos contingencia
+        "seg_comp_conting":   0,   # Procesos completados contingencia
+        "seg_pct_mdm":        0.0, # % MDM dispositivos
+    }
+    for key, val in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = val
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. CÁLCULO DE KPIs ESTRATÉGICOS
+# ─────────────────────────────────────────────────────────────────────────────
+def calculate_strategic_kpis() -> dict:
+    """Calcula los % de cumplimiento de cada objetivo estratégico
+    a partir de los valores editados en session_state."""
+
+    ss = st.session_state
+
+    # ── 1. Eficiencia Operativa ────────────────────────────────────────────────
+    meta_eo = max(ss.get("eo_meta", 1), 1)
+    pct_eo  = min(round(ss.get("eo_completados", 0) / meta_eo * 100, 1), 100)
+
+    # ── 2. Datos Confiables ────────────────────────────────────────────────────
+    meta_dc  = max(ss.get("dc_meta", 1), 1)
+    df_dc    = ss.get("dc_tabla", pd.DataFrame({"Proceso": [], "% Avance": []}))
+    suma_dc  = float(df_dc["% Avance"].sum()) if len(df_dc) > 0 else 0
+    pct_dc   = min(round(suma_dc / (meta_dc * 100) * 100, 1), 100)
+
+    # ── 3. Excelencia ERP ──────────────────────────────────────────────────────
+    meta_erp = max(ss.get("erp_meta", 1), 1)
+    df_erp   = ss.get("erp_tabla", pd.DataFrame({"Mejora ERP": [], "% Avance": []}))
+    suma_erp = float(df_erp["% Avance"].sum()) if len(df_erp) > 0 else 0
+    pct_erp  = min(round(suma_erp / (meta_erp * 100) * 100, 1), 100)
+
+    # ── 4. Integración ─────────────────────────────────────────────────────────
+    meta_int = max(ss.get("int_meta", 1), 1)
+    pct_int  = min(round(ss.get("int_completadas", 0) / meta_int * 100, 1), 100)
+
+    # ── 5. Seguridad de la Información ────────────────────────────────────────
+    pct_cookies = float(ss.get("seg_pct_cookies", 0))
+    meta_cont   = max(ss.get("seg_meta_conting", 1), 1)
+    comp_cont   = ss.get("seg_comp_conting", 0)
+    pct_cont    = min(round(comp_cont / meta_cont * 100, 1), 100)
+    pct_mdm     = float(ss.get("seg_pct_mdm", 0))
+    pct_seg     = round((pct_cookies + pct_cont + pct_mdm) / 3, 1)  # promedio ponderado igual
+
+    # ── Global ────────────────────────────────────────────────────────────────
+    global_pct = round((pct_eo + pct_dc + pct_erp + pct_int + pct_seg) / 5, 1)
+
+    return {
+        "Eficiencia Operativa":       {"pct": pct_eo,  "meta": meta_eo,  "avance": ss.get("eo_completados", 0)},
+        "Datos Confiables":           {"pct": pct_dc,  "meta": meta_dc,  "avance": round(suma_dc, 1)},
+        "Excelencia ERP":             {"pct": pct_erp, "meta": meta_erp, "avance": round(suma_erp, 1)},
+        "Integración":                {"pct": pct_int, "meta": meta_int, "avance": ss.get("int_completadas", 0)},
+        "Seguridad de la Información":{"pct": pct_seg, "meta": "—",      "avance": f"C:{pct_cookies}% / Cont:{pct_cont}% / MDM:{pct_mdm}%"},
+        "_global": global_pct,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. HELPERS DE SEMÁFORO
+# ─────────────────────────────────────────────────────────────────────────────
+def semaforo_badge(pct: float) -> str:
+    if pct > 80:
+        return f'<span class="badge-green">🟢 En meta</span>'
+    elif pct >= 50:
+        return f'<span class="badge-yellow">🟡 En seguimiento</span>'
+    else:
+        return f'<span class="badge-red">🔴 En riesgo</span>'
+
+def semaforo_color(pct: float) -> str:
+    if pct > 80:  return COLORS["green"]
+    if pct >= 50: return COLORS["yellow"]
+    return COLORS["red"]
+
+def obj_card_html(titulo: str, pct: float, meta_str: str, color: str) -> str:
+    badge = semaforo_badge(pct)
+    bar_w = min(int(pct), 100)
+    bar_c = semaforo_color(pct)
+    return f"""
+    <div class="obj-card">
+      <div class="obj-card-accent" style="background:{color};"></div>
+      <div class="obj-label">{titulo}</div>
+      <div class="obj-pct" style="color:{color};">{pct:.1f}%</div>
+      <div style="background:#f1f5f9;border-radius:6px;height:6px;margin:8px 0;">
+        <div style="background:{bar_c};width:{bar_w}%;height:6px;
+                    border-radius:6px;transition:width .6s;"></div>
+      </div>
+      {badge}
+      <div class="obj-meta">{meta_str}</div>
+    </div>"""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. PANEL DE CONFIGURACIÓN EDITABLE (POR OBJETIVO)
+# ─────────────────────────────────────────────────────────────────────────────
+def _section_divider(emoji: str, titulo: str):
+    st.markdown(
+        f"<div style='font-size:12px;font-weight:700;text-transform:uppercase;"
+        f"letter-spacing:1px;color:#3b82f6;padding:10px 0 6px;border-bottom:"
+        f"2px solid #dbeafe;margin-bottom:12px;'>{emoji} {titulo}</div>",
+        unsafe_allow_html=True,
+    )
+
+def config_eficiencia_operativa():
+    _section_divider("1️⃣", "Eficiencia Operativa")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.session_state["eo_meta"] = st.number_input(
+            "Meta trimestral (procesos)", min_value=1, max_value=500,
+            value=int(st.session_state["eo_meta"]), step=1, key="inp_eo_meta",
+            help="Total de procesos que se espera completar este trimestre",
+        )
+    with c2:
+        st.session_state["eo_completados"] = st.number_input(
+            "Procesos completados", min_value=0,
+            max_value=int(st.session_state["eo_meta"]),
+            value=int(st.session_state["eo_completados"]), step=1, key="inp_eo_comp",
+        )
+    meta = max(st.session_state["eo_meta"], 1)
+    pct  = min(round(st.session_state["eo_completados"] / meta * 100, 1), 100)
+    st.progress(pct / 100, text=f"Avance automático: **{pct}%**")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
+def config_datos_confiables():
+    _section_divider("2️⃣", "Datos Confiables")
+    c1, _ = st.columns([1, 2])
+    with c1:
+        st.session_state["dc_meta"] = st.number_input(
+            "Meta procesos automáticos", min_value=1, max_value=100,
+            value=int(st.session_state["dc_meta"]), step=1, key="inp_dc_meta",
+            help="Denominador para calcular el % total del objetivo",
+        )
+    st.markdown(
+        "<div style='font-size:12px;color:#64748b;margin:6px 0 4px;'>"
+        "📋 Edita la tabla de procesos y sus avances:</div>",
+        unsafe_allow_html=True,
+    )
+    edited = st.data_editor(
+        st.session_state["dc_tabla"],
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Proceso":   st.column_config.TextColumn("Proceso / Responsable", width="medium"),
+            "% Avance":  st.column_config.NumberColumn("% Avance", min_value=0, max_value=100, step=1, format="%d%%"),
+        },
+        key="editor_dc",
+    )
+    st.session_state["dc_tabla"] = edited
+    meta = max(st.session_state["dc_meta"], 1)
+    suma = float(edited["% Avance"].sum()) if len(edited) > 0 else 0
+    pct  = min(round(suma / (meta * 100) * 100, 1), 100)
+    st.info(f"**% Total Datos Confiables = {suma:.0f} / ({meta} × 100) = {pct:.1f}%**")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
+def config_excelencia_erp():
+    _section_divider("3️⃣", "Excelencia ERP")
+    c1, _ = st.columns([1, 2])
+    with c1:
+        st.session_state["erp_meta"] = st.number_input(
+            "Meta mejoras ERP", min_value=1, max_value=200,
+            value=int(st.session_state["erp_meta"]), step=1, key="inp_erp_meta",
+        )
+    st.markdown(
+        "<div style='font-size:12px;color:#64748b;margin:6px 0 4px;'>"
+        "📋 Edita la tabla de mejoras ERP:</div>",
+        unsafe_allow_html=True,
+    )
+    edited = st.data_editor(
+        st.session_state["erp_tabla"],
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "Mejora ERP": st.column_config.TextColumn("Mejora / Funcionalidad", width="medium"),
+            "% Avance":   st.column_config.NumberColumn("% Avance", min_value=0, max_value=100, step=1, format="%d%%"),
+        },
+        key="editor_erp",
+    )
+    st.session_state["erp_tabla"] = edited
+    meta = max(st.session_state["erp_meta"], 1)
+    suma = float(edited["% Avance"].sum()) if len(edited) > 0 else 0
+    pct  = min(round(suma / (meta * 100) * 100, 1), 100)
+    st.info(f"**% Total Excelencia ERP = {suma:.0f} / ({meta} × 100) = {pct:.1f}%**")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
+def config_integracion():
+    _section_divider("4️⃣", "Integración")
+    c1, c2 = st.columns(2)
+    with c1:
+        st.session_state["int_meta"] = st.number_input(
+            "Meta integraciones", min_value=1, max_value=100,
+            value=int(st.session_state["int_meta"]), step=1, key="inp_int_meta",
+        )
+    with c2:
+        st.session_state["int_completadas"] = st.number_input(
+            "Integraciones completadas", min_value=0,
+            max_value=int(st.session_state["int_meta"]),
+            value=int(st.session_state["int_completadas"]), step=1, key="inp_int_comp",
+        )
+    meta = max(st.session_state["int_meta"], 1)
+    pct  = min(round(st.session_state["int_completadas"] / meta * 100, 1), 100)
+    st.progress(pct / 100, text=f"Avance automático: **{pct}%**")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
+def config_seguridad():
+    _section_divider("5️⃣", "Seguridad de la Información")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.session_state["seg_pct_cookies"] = st.slider(
+            "% Ajuste cookies", min_value=0.0, max_value=100.0,
+            value=float(st.session_state["seg_pct_cookies"]),
+            step=0.5, format="%.1f%%", key="sl_seg_cookies",
+        )
+    with c2:
+        st.session_state["seg_pct_mdm"] = st.slider(
+            "% MDM dispositivos", min_value=0.0, max_value=100.0,
+            value=float(st.session_state["seg_pct_mdm"]),
+            step=0.5, format="%.1f%%", key="sl_seg_mdm",
+        )
+    with c3:
+        pass  # espaciado
+
+    st.markdown(
+        "<div style='font-size:12px;color:#64748b;margin:8px 0 4px;'>"
+        "🛡️ Procesos críticos de contingencia:</div>",
+        unsafe_allow_html=True,
+    )
+    c4, c5 = st.columns(2)
+    with c4:
+        st.session_state["seg_meta_conting"] = st.number_input(
+            "Meta procesos contingencia", min_value=1, max_value=200,
+            value=int(st.session_state["seg_meta_conting"]), step=1, key="inp_seg_meta",
+        )
+    with c5:
+        st.session_state["seg_comp_conting"] = st.number_input(
+            "Procesos completados contingencia", min_value=0,
+            max_value=int(st.session_state["seg_meta_conting"]),
+            value=int(st.session_state["seg_comp_conting"]), step=1, key="inp_seg_comp",
+        )
+
+    meta_c = max(st.session_state["seg_meta_conting"], 1)
+    pct_c  = min(round(st.session_state["seg_comp_conting"] / meta_c * 100, 1), 100)
+    pct_seg = round((st.session_state["seg_pct_cookies"] + pct_c + st.session_state["seg_pct_mdm"]) / 3, 1)
+
+    c6, c7, c8, c9 = st.columns(4)
+    c6.metric("Cookies", f"{st.session_state['seg_pct_cookies']:.1f}%")
+    c7.metric("Contingencia", f"{pct_c:.1f}%")
+    c8.metric("MDM", f"{st.session_state['seg_pct_mdm']:.1f}%")
+    c9.metric("⭐ Promedio Seguridad", f"{pct_seg:.1f}%")
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 15. GRÁFICOS ESTRATÉGICOS
+# ─────────────────────────────────────────────────────────────────────────────
+def chart_radar_estrategico(kpis: dict) -> go.Figure:
+    """Radar de araña con los 5 objetivos estratégicos."""
+    OBJS = [
+        "Eficiencia Operativa",
+        "Datos Confiables",
+        "Excelencia ERP",
+        "Integración",
+        "Seguridad de la Información",
+    ]
+    values = [kpis[o]["pct"] for o in OBJS]
+    values_closed = values + [values[0]]   # cerrar polígono
+    labels_closed = OBJS + [OBJS[0]]
+
+    fig = go.Figure()
+    # Zona sombreada de meta (100%)
+    fig.add_trace(go.Scatterpolar(
+        r=[100] * (len(OBJS) + 1),
+        theta=labels_closed,
+        fill="toself",
+        fillcolor="rgba(226,232,240,0.4)",
+        line=dict(color="#e2e8f0", width=1),
+        name="Meta 100%",
+        hoverinfo="skip",
+    ))
+    # Valores reales
+    fig.add_trace(go.Scatterpolar(
+        r=values_closed,
+        theta=labels_closed,
+        fill="toself",
+        fillcolor="rgba(29,106,245,0.18)",
+        line=dict(color=COLORS["primary"], width=3),
+        marker=dict(size=8, color=COLORS["primary"]),
+        name="Cumplimiento actual",
+        hovertemplate="<b>%{theta}</b><br>%{r:.1f}%<extra></extra>",
+    ))
+
+    fig.update_layout(
+        polar=dict(
+            radialaxis=dict(
+                visible=True, range=[0, 100],
+                ticksuffix="%", tickfont=dict(size=10, color="#8fa0b8"),
+                gridcolor="#e2e8f0", linecolor="#e2e8f0",
+            ),
+            angularaxis=dict(
+                tickfont=dict(size=12, color="#334155", family="Inter, sans-serif"),
+                gridcolor="#e2e8f0", linecolor="#e2e8f0",
+            ),
+            bgcolor="white",
+        ),
+        showlegend=True,
+        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center",
+                    font=dict(size=11, family="Inter, sans-serif")),
+        paper_bgcolor="white",
+        margin=dict(l=40, r=40, t=20, b=40),
+        height=400,
+        font=dict(family="Inter, sans-serif"),
+    )
+    return fig
+
+
+def chart_barras_objetivos(kpis: dict) -> go.Figure:
+    """Barras horizontales comparativas de los 5 objetivos."""
+    OBJS = [
+        "Eficiencia Operativa",
+        "Datos Confiables",
+        "Excelencia ERP",
+        "Integración",
+        "Seguridad de la Información",
+    ]
+    pcts   = [kpis[o]["pct"] for o in OBJS]
+    colors = [semaforo_color(p) for p in pcts]
+
+    fig = go.Figure(go.Bar(
+        x=pcts,
+        y=OBJS,
+        orientation="h",
+        marker_color=colors,
+        marker_line_width=0,
+        text=[f"{p:.1f}%" for p in pcts],
+        textposition="outside",
+        textfont=dict(size=13, family="Inter, sans-serif"),
+        cliponaxis=False,
+    ))
+    fig.update_layout(
+        xaxis=dict(range=[0, 115], showgrid=True, gridcolor="#f1f5f9",
+                   ticksuffix="%", zeroline=False, title=None,
+                   tickfont=dict(size=11, color="#8fa0b8")),
+        yaxis=dict(showgrid=False, title=None, automargin=True,
+                   tickfont=dict(size=12, color="#334155")),
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=0, r=60, t=8, b=8),
+        height=260,
+        bargap=0.38,
+        font=dict(family="Inter, sans-serif"),
+        shapes=[
+            dict(type="line", x0=80, x1=80, y0=-0.5, y1=len(OBJS)-0.5,
+                 line=dict(color="#0da063", width=1.5, dash="dash")),
+        ],
+        annotations=[
+            dict(x=81, y=len(OBJS)-0.5, text="Meta 80%",
+                 font=dict(size=10, color="#0da063"), showarrow=False,
+                 xanchor="left", yanchor="top"),
+        ],
+    )
+    return fig
+
+
+def chart_reqs_por_categoria(df: pd.DataFrame) -> go.Figure:
+    """Barras de reqs por categoría estratégica desde el Excel."""
+    if df.empty:
+        return go.Figure()
+    cat = (
+        df.groupby("categoria").size()
+        .reset_index(name="count")
+        .sort_values("count", ascending=True)
+    )
+    if cat.empty:
+        return go.Figure()
+    colors = [CATEGORY_COLORS.get(c, "#94a3b8") for c in cat["categoria"]]
+    max_val = cat["count"].max()
+    fig = go.Figure(go.Bar(
+        x=cat["count"], y=cat["categoria"], orientation="h",
+        marker_color=colors, marker_line_width=0,
+        text=cat["count"], textposition="outside",
+        textfont=dict(size=12, family="Inter, sans-serif"),
+        cliponaxis=False,
+    ))
+    fig.update_layout(
+        xaxis=dict(range=[0, max_val * 1.25], showgrid=True, gridcolor="#f1f5f9",
+                   title=None, zeroline=False, tickfont=dict(size=11, color="#8fa0b8")),
+        yaxis=dict(showgrid=False, title=None, automargin=True,
+                   tickfont=dict(size=12, color="#334155")),
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=0, r=50, t=8, b=8),
+        height=max(200, 42 * len(cat) + 30),
+        bargap=0.35,
+        font=dict(family="Inter, sans-serif"),
+    )
+    return fig
+
+
+def chart_reqs_por_area(df: pd.DataFrame) -> go.Figure:
+    """Barras de reqs por área de negocio (etiquetas sin categoría estratégica)."""
+    if df.empty:
+        return go.Figure()
+
+    skip_patterns = list(STRATEGIC_PATTERNS.values()) + [
+        r"excelencia erp", r"eficiencia operativa",
+        r"seguridad", r"datos confiables", r"integraci",
+    ]
+    area_counts = {}
+    for etiq in df["etiquetas"].fillna(""):
+        for tag in str(etiq).split(";"):
+            tag_c = re.sub(r"^[🟨🟦🟩🟥🔴⬛]\s*", "", tag.strip()).strip()
+            if not tag_c:
+                continue
+            if any(re.search(p, tag.lower(), re.IGNORECASE) for p in skip_patterns):
+                continue
+            if len(tag_c) > 1:
+                area_counts[tag_c] = area_counts.get(tag_c, 0) + 1
+
+    if not area_counts:
+        return go.Figure()
+
+    areas = (
+        pd.Series(area_counts).sort_values(ascending=False).head(12).reset_index()
+    )
+    areas.columns = ["Área", "Cantidad"]
+    max_y = areas["Cantidad"].max()
+    palette = ["#1d6af5","#0da063","#6d28d9","#0891b2","#d97706","#e03030",
+               "#ea580c","#059669","#7c3aed","#dc2626","#db2777","#2563eb"]
+    colors = [palette[i % len(palette)] for i in range(len(areas))]
+
+    fig = go.Figure(go.Bar(
+        x=areas["Área"], y=areas["Cantidad"],
+        marker_color=colors, marker_line_width=0,
+        text=areas["Cantidad"], textposition="outside",
+        textfont=dict(size=11, family="Inter, sans-serif"),
+        cliponaxis=False,
+    ))
+    fig.update_layout(
+        xaxis=dict(title=None, tickangle=-35, showgrid=False, type="category",
+                   tickfont=dict(size=11, color="#334155"), automargin=True),
+        yaxis=dict(title=None, showgrid=True, gridcolor="#f1f5f9", zeroline=False,
+                   range=[0, max_y * 1.25], tickfont=dict(size=11, color="#8fa0b8")),
+        plot_bgcolor="white", paper_bgcolor="white",
+        margin=dict(l=10, r=20, t=8, b=10),
+        height=280, bargap=0.35,
+        font=dict(family="Inter, sans-serif", size=11),
+    )
+    return fig
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16. VISTA ESTRATÉGICA – VICEPRESIDENCIA
+# ─────────────────────────────────────────────────────────────────────────────
+def create_executive_view(df: pd.DataFrame):
+    """Vista completa de Indicadores Estratégicos – Vicepresidencia."""
+
+    # ── Header ──────────────────────────────────────────────────────────────
+    col_h1, col_h2 = st.columns([3, 1])
+    with col_h1:
+        st.markdown(
+            "<h2 style='color:#0f1c2e;font-weight:900;margin-bottom:2px;'>"
+            "🔵 Indicadores Estratégicos — Vicepresidencia</h2>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<p style='color:#64748b;font-size:14px;margin-top:0;'>"
+            "Panel editable de metas y avances por objetivo estratégico TD 2026 · "
+            f"Actualizado: {datetime.today().strftime('%d/%m/%Y')}</p>",
+            unsafe_allow_html=True,
+        )
+    with col_h2:
+        if not df.empty:
+            st.markdown(
+                f"<div style='text-align:right;padding-top:16px;'>"
+                f"<span style='background:#eff6ff;color:#1d6af5;font-size:12px;"
+                f"font-weight:700;padding:6px 14px;border-radius:20px;'>"
+                f"📂 {len(df)} reqs. del Excel</span></div>",
+                unsafe_allow_html=True,
+            )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PANEL DE CONFIGURACIÓN EDITABLE
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        "<div style='font-size:11px;font-weight:700;letter-spacing:1.2px;"
+        "text-transform:uppercase;color:#8fa0b8;border-bottom:1px solid #e2e8f0;"
+        "padding-bottom:6px;margin:1.4rem 0 1rem;'>⚙️ Configuración de Metas Estratégicas</div>",
+        unsafe_allow_html=True,
+    )
+
+    with st.container():
+        st.markdown(
+            "<div class='config-panel'>"
+            "<div class='config-title'>✏️ Edita las metas y avances de cada objetivo — "
+            "los KPIs se actualizan automáticamente</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    tab_eo, tab_dc, tab_erp, tab_int, tab_seg = st.tabs([
+        "1️⃣ Eficiencia Op.",
+        "2️⃣ Datos Confiables",
+        "3️⃣ Excelencia ERP",
+        "4️⃣ Integración",
+        "5️⃣ Seguridad Info.",
+    ])
+
+    with tab_eo:
+        config_eficiencia_operativa()
+    with tab_dc:
+        config_datos_confiables()
+    with tab_erp:
+        config_excelencia_erp()
+    with tab_int:
+        config_integracion()
+    with tab_seg:
+        config_seguridad()
+
+    # ── Calcular KPIs estratégicos ─────────────────────────────────────────
+    skpis = calculate_strategic_kpis()
+    OBJS_ORDER = [
+        "Eficiencia Operativa",
+        "Datos Confiables",
+        "Excelencia ERP",
+        "Integración",
+        "Seguridad de la Información",
+    ]
+    OBJ_COLORS = {
+        "Eficiencia Operativa":        COLORS["green"],
+        "Datos Confiables":            COLORS["purple"],
+        "Excelencia ERP":              COLORS["primary"],
+        "Integración":                 COLORS["cyan"],
+        "Seguridad de la Información": COLORS["red"],
+    }
+    global_pct = skpis["_global"]
+
+    # ════════════════════════════════════════════════════════════════════════
+    # KPIs ESTRATÉGICOS — TARJETAS GRANDES
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        "<div class='section-header'>📊 Cumplimiento por Objetivo Estratégico</div>",
+        unsafe_allow_html=True,
+    )
+    cols_kpi = st.columns(5)
+    for i, obj in enumerate(OBJS_ORDER):
+        data   = skpis[obj]
+        color  = OBJ_COLORS[obj]
+        meta_s = f"Meta: {data['meta']}  ·  Avance: {data['avance']}" if data["meta"] != "—" else f"Avance: {data['avance']}"
+        with cols_kpi[i]:
+            st.markdown(
+                obj_card_html(obj, data["pct"], meta_s, color),
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # INDICADOR GLOBAL + RADAR
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        "<div class='section-header'>🎯 Visión Global Estratégica</div>",
+        unsafe_allow_html=True,
+    )
+
+    col_global, col_radar = st.columns([1, 2])
+
+    with col_global:
+        badge_g  = semaforo_badge(global_pct)
+        color_g  = semaforo_color(global_pct)
+        bar_g    = min(int(global_pct), 100)
+        st.markdown(
+            f"<div class='global-kpi'>"
+            f"<div class='global-kpi-label'>Cumplimiento Estratégico Global</div>"
+            f"<div class='global-kpi-value'>{global_pct:.1f}%</div>"
+            f"<div class='global-kpi-sub'>Promedio de 5 objetivos TD 2026</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown(
+            "<p style='font-size:12px;font-weight:600;color:#64748b;'>"
+            "Comparativa por objetivo:</p>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            chart_barras_objetivos(skpis),
+            use_container_width=True, key="ev_barras",
+        )
+
+    with col_radar:
+        st.markdown(
+            "<p style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
+            "Radar Estratégico — Perfil de cumplimiento</p>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            chart_radar_estrategico(skpis),
+            use_container_width=True, key="ev_radar",
+        )
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TABLA RESUMEN EJECUTIVA
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        "<div class='section-header'>📋 Tabla Resumen Ejecutiva</div>",
+        unsafe_allow_html=True,
+    )
+
+    summary_rows = []
+    for obj in OBJS_ORDER:
+        d   = skpis[obj]
+        pct = d["pct"]
+        estado = "🟢 En meta" if pct > 80 else ("🟡 En seguimiento" if pct >= 50 else "🔴 En riesgo")
+        summary_rows.append({
+            "Objetivo Estratégico": obj,
+            "Meta":                 str(d["meta"]),
+            "Avance":               str(d["avance"]),
+            "% Cumplimiento":       f"{pct:.1f}%",
+            "Estado":               estado,
+        })
+    summary_df = pd.DataFrame(summary_rows)
+
+    def _style_summary(row):
+        pct_val = float(str(row["% Cumplimiento"]).replace("%", ""))
+        if pct_val > 80:
+            bg = "background: #f0fdf4"
+        elif pct_val >= 50:
+            bg = "background: #fefce8"
+        else:
+            bg = "background: #fef2f2"
+        return [bg] * len(row)
+
+    styled_summary = (
+        summary_df.style
+        .apply(_style_summary, axis=1)
+        .set_properties(**{"font-size": "13px", "text-align": "left"})
+        .set_properties(subset=["% Cumplimiento"],
+                        **{"font-weight": "700", "text-align": "center"})
+        .set_properties(subset=["Estado"],
+                        **{"text-align": "center"})
+        .set_table_styles([
+            {"selector": "thead th", "props": [
+                ("background", "#f4f6fb"), ("font-size", "10px"),
+                ("font-weight", "700"), ("text-transform", "uppercase"),
+                ("letter-spacing", "0.6px"), ("color", "#64748b"),
+                ("padding", "10px 16px"), ("border-bottom", "2px solid #e2e8f0"),
+            ]},
+            {"selector": "tbody td", "props": [
+                ("padding", "12px 16px"), ("border-bottom", "1px solid #f1f5f9"),
+            ]},
+        ])
+    )
+    summary_df.index = range(1, len(summary_df) + 1)
+    st.dataframe(styled_summary, use_container_width=True, height=260)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # INDICADORES DE REQUERIMIENTOS DEL EXCEL
+    # ════════════════════════════════════════════════════════════════════════
+    st.markdown(
+        "<div class='section-header'>📂 Indicadores de Portafolio — Datos del Excel</div>",
+        unsafe_allow_html=True,
+    )
+
+    if df.empty:
+        st.info("📭 Carga un archivo Excel desde el panel lateral para ver los indicadores de portafolio.")
+        return
+
+    total_reqs = len(df)
+    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+    col_r1.metric("Total Requerimientos", total_reqs)
+    col_r2.metric(
+        "Por categoría estratégica",
+        df["categoria"].nunique(),
+        help="Categorías únicas detectadas en etiquetas",
+    )
+    comp = (df["progreso"] == "Completado").sum()
+    col_r3.metric("Completados", comp, f"{round(comp/total_reqs*100,1)}% del total")
+    col_r4.metric(
+        "Sin asignar",
+        (df["asignado_raw"] == "Sin asignar").sum(),
+        delta_color="inverse",
+    )
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    col_rcat, col_rarea = st.columns([1, 1.6])
+
+    with col_rcat:
+        st.markdown(
+            "<p style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
+            "Requerimientos por Categoría Estratégica</p>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            chart_reqs_por_categoria(df),
+            use_container_width=True, key="ev_cat",
+        )
+
+    with col_rarea:
+        st.markdown(
+            "<p style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
+            "Requerimientos por Área de Negocio</p>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(
+            chart_reqs_por_area(df),
+            use_container_width=True, key="ev_area",
+        )
+
+    st.caption(
+        "Vista Estratégica TD 2026 · Vicepresidencia Transformación Digital · "
+        "Metas editables — no requiere modificar el código"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 10. PUNTO DE ENTRADA
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     inject_css()
+    init_session_state()
 
-    # ── Pantalla de carga ──────────────────────────────────────────────────
+    # ── Sidebar ────────────────────────────────────────────────────────────
     with st.sidebar:
-        st.markdown("### ⚡ TD 2026 Analytics")
-        st.markdown("---")
-        uploaded = st.file_uploader(
-            "📂 Subir Excel de Planner",
-            type=["xlsx", "xls"],
-            help="Exporta el plan desde Microsoft Planner → Excel",
+        st.markdown(
+            "<div style='font-size:18px;font-weight:900;color:#0f1c2e;"
+            "padding:8px 0 4px;'>⚡ TD 2026 Analytics</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            "<div style='font-size:11px;color:#8fa0b8;margin-bottom:16px;'>"
+            "Transformación Digital · Planner Dashboard</div>",
+            unsafe_allow_html=True,
         )
         st.markdown("---")
 
-    if uploaded is None:
-        # ── Landing / Welcome ──────────────────────────────────────────────
-        st.markdown("""
-        <div style='text-align:center;padding:60px 20px 40px;'>
-          <div style='font-size:72px;margin-bottom:16px;'>⚡</div>
-          <h1 style='font-size:2.2rem;font-weight:800;color:#0f1c2e;margin-bottom:8px;'>
-            Dashboard Gestión de Requerimientos
-          </h1>
-          <p style='font-size:1.1rem;color:#64748b;margin-bottom:40px;'>
-            Analítica ejecutiva para Microsoft Planner · Transformación Digital 2026
-          </p>
-        </div>
-        """, unsafe_allow_html=True)
+        # ── Navegación ─────────────────────────────────────────────────────
+        st.markdown(
+            "<div style='font-size:10px;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:1px;color:#8fa0b8;margin-bottom:8px;'>Vistas</div>",
+            unsafe_allow_html=True,
+        )
+        vista = st.radio(
+            "Navegación",
+            options=["🟢  Control Operativo", "🔵  Indicadores Estratégicos"],
+            index=0,
+            label_visibility="collapsed",
+        )
+        st.markdown("---")
 
-        col1, col2, col3 = st.columns(3)
-        with col1:
-            st.info("**📊 KPIs Ejecutivos**\n\nCompletitud, retrasos, lead time y velocidad de entrega en tiempo real.")
-        with col2:
-            st.info("**👥 Carga de Equipo**\n\nTabla con semáforos de cumplimiento, vencidas abiertas y carga activa.")
-        with col3:
-            st.info("**🔄 Pipeline Estratégico**\n\nDistribución por categoría OKR, área de negocio y especialista.")
+        # ── Carga de archivo ───────────────────────────────────────────────
+        st.markdown(
+            "<div style='font-size:10px;font-weight:700;text-transform:uppercase;"
+            "letter-spacing:1px;color:#8fa0b8;margin-bottom:8px;'>Fuente de datos</div>",
+            unsafe_allow_html=True,
+        )
+        uploaded = st.file_uploader(
+            "📂 Excel de Planner",
+            type=["xlsx", "xls"],
+            help="Exporta tu plan desde Microsoft Planner → Exportar a Excel",
+            label_visibility="visible",
+        )
+        if uploaded:
+            st.success("✅ Archivo cargado", icon="📊")
+        else:
+            st.caption("⚠ Sin archivo — algunas métricas no estarán disponibles.")
 
-        st.markdown("""
-        <div style='text-align:center;margin-top:40px;padding:24px;background:white;
-                    border-radius:12px;border:1px solid #e2e8f0;'>
-          <p style='color:#64748b;font-size:14px;margin-bottom:8px;'>
-            👈 <strong>Sube tu archivo Excel</strong> exportado desde Microsoft Planner en el panel lateral para comenzar.
-          </p>
-          <p style='color:#94a3b8;font-size:12px;'>
-            Formatos soportados: .xlsx · .xls
-          </p>
-        </div>
-        """, unsafe_allow_html=True)
-        return
+        st.markdown("---")
+        st.caption(f"v3.0 · {datetime.today().strftime('%d/%m/%Y')}")
 
-    # ── Cargar y procesar ──────────────────────────────────────────────────
-    with st.spinner("⚙ Cargando y procesando datos..."):
-        raw_df  = load_data(uploaded)
-        if raw_df.empty:
+    # ── Cargar y procesar datos (si hay archivo) ───────────────────────────
+    df     = pd.DataFrame()
+    meta_d = {}
+
+    if uploaded is not None:
+        with st.spinner("⚙ Procesando datos..."):
+            raw_df = load_data(uploaded)
+            if not raw_df.empty:
+                df, meta_d = preprocess_data(raw_df)
+
+        if meta_d.get("missing_cols"):
+            with st.expander(
+                f"⚠ {len(meta_d['missing_cols'])} columnas no encontradas",
+                expanded=False,
+            ):
+                st.warning(
+                    "Columnas no encontradas (se usarán vacíos):\n"
+                    + ", ".join(meta_d["missing_cols"])
+                )
+
+    # ── Enrutar vista ──────────────────────────────────────────────────────
+    if "Estratégicos" in vista:
+        create_executive_view(df)
+
+    else:
+        # ── Vista Operativa (sin cambios) ──────────────────────────────────
+        if uploaded is None:
+            # Landing
+            st.markdown("""
+            <div style='text-align:center;padding:60px 20px 40px;'>
+              <div style='font-size:72px;margin-bottom:16px;'>⚡</div>
+              <h1 style='font-size:2.2rem;font-weight:800;color:#0f1c2e;margin-bottom:8px;'>
+                Dashboard Gestión de Requerimientos
+              </h1>
+              <p style='font-size:1.1rem;color:#64748b;margin-bottom:40px;'>
+                Analítica ejecutiva para Microsoft Planner · Transformación Digital 2026
+              </p>
+            </div>
+            """, unsafe_allow_html=True)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.info("**📊 KPIs Ejecutivos**\n\nCompletitud, retrasos, lead time y velocidad de entrega en tiempo real.")
+            with col2:
+                st.info("**👥 Carga de Equipo**\n\nTabla con semáforos de cumplimiento, vencidas abiertas y carga activa.")
+            with col3:
+                st.info("**🔄 Pipeline Estratégico**\n\nDistribución por categoría OKR, área de negocio y especialista.")
+            st.markdown("""
+            <div style='text-align:center;margin-top:40px;padding:24px;background:white;
+                        border-radius:12px;border:1px solid #e2e8f0;'>
+              <p style='color:#64748b;font-size:14px;margin-bottom:8px;'>
+                👈 <strong>Sube tu archivo Excel</strong> exportado desde Microsoft Planner
+                en el panel lateral para comenzar.
+              </p>
+              <p style='color:#94a3b8;font-size:12px;'>Formatos soportados: .xlsx · .xls</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        elif df.empty:
             st.error("El archivo está vacío o no pudo leerse correctamente.")
-            return
 
-        df, meta = preprocess_data(raw_df)
-
-    # Advertir columnas faltantes (no bloquear)
-    if meta.get("missing_cols"):
-        with st.expander(f"⚠ {len(meta['missing_cols'])} columnas no encontradas — click para ver"):
-            st.warning(
-                "Las siguientes columnas no se encontraron y se usarán valores vacíos:\n"
-                + ", ".join(meta["missing_cols"])
-            )
-
-    create_dashboard(df, meta)
+        else:
+            create_dashboard(df, meta_d)
 
 
 if __name__ == "__main__":
