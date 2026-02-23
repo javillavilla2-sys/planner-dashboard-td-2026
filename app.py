@@ -1941,11 +1941,11 @@ def render_strategic_configuration():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 16B. VISTA ESTRATÉGICA – VICEPRESIDENCIA (ORQUESTADOR)
+# 16B. VISTA ESTRATÉGICA - (ORQUESTADOR)
 # ─────────────────────────────────────────────────────────────────────────────
 def create_executive_view(df: pd.DataFrame):
     """
-    Vista Indicadores Estratégicos – Vicepresidencia.
+    Vista Indicadores Estratégicos TD.
 
     Orden de secciones:
     1️⃣  SUPERIOR  – 5 KPI tarjetas (render_strategic_kpis)
@@ -1959,7 +1959,7 @@ def create_executive_view(df: pd.DataFrame):
     with col_h1:
         st.markdown(
             "<h2 style='color:#0f1c2e;font-weight:900;margin-bottom:2px;'>"
-            "🔵 Indicadores Estratégicos — Vicepresidencia</h2>",
+            "🔵 Indicadores Estratégicos </h2>",
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -2051,7 +2051,7 @@ def create_executive_view(df: pd.DataFrame):
                             use_container_width=True, key="ev_area")
 
     st.caption(
-        "Vista Estratégica TD 2026 · Vicepresidencia Transformación Digital · "
+        "Vista Estratégica TD 2026 · Transformación Digital · "
         "Metas editables en tiempo real — sin modificar el código"
     )
 
