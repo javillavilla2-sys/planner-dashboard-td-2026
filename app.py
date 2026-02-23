@@ -602,26 +602,25 @@ def chart_progreso_dona(kpis: dict) -> go.Figure:
     pct_comp = kpis["pct_completado"]
     total    = kpis["total"]
 
+    # ── Layout minimalista 100% compatible con Streamlit Cloud ───────────────
     fig.update_layout(
         annotations=[dict(
-            text=f"<b style='font-size:18px'>{pct_comp}%</b><br>"
-                 f"<span style='font-size:10px;color:#8fa0b8'>de {total} reqs.</span>",
+            text=f"<b>{pct_comp}%</b><br>completado",
             x=0.5, y=0.5,
-            font=dict(size=14, family="Inter, sans-serif", color="#0f1c2e"),
+            font=dict(size=15, color="#0f1c2e"),
             showarrow=False,
             align="center",
         )],
+        showlegend=True,
         legend=dict(
             orientation="h",
-            x=0.5, xanchor="center",
-            y=-0.08, yanchor="top",
-            font=dict(size=11, family="Inter, sans-serif"),
-            itemgap=12,
+            x=0.5,
+            xanchor="center",
+            y=-0.05,
         ),
-        margin=dict(l=10, r=10, t=10, b=10),
-        height=290,
+        margin=dict(t=40, b=40, l=40, r=40),
+        height=320,
         paper_bgcolor="white",
-        font=dict(family="Inter, sans-serif"),
     )
     return fig
 
@@ -792,8 +791,7 @@ def chart_carga_por_especialista(wl: pd.DataFrame) -> go.Figure:
                    type="category"),
         yaxis=dict(title=None, showgrid=True, gridcolor="#f1f5f9", zeroline=False,
                    tickfont=dict(size=11, color="#8fa0b8")),
-        legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center",
-                    font=dict(size=11, family="Inter, sans-serif"), itemgap=16),
+        legend=dict(orientation="h", y=-0.15, x=0.5, xanchor="center"),
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(l=10, r=20, t=8, b=40),
         height=310,
@@ -1283,6 +1281,28 @@ def init_session_state():
         "seg_meta_conting":   10,  # Meta procesos contingencia
         "seg_comp_conting":   0,   # Procesos completados contingencia
         "seg_pct_mdm":        0.0, # % MDM dispositivos
+
+        # ── Hitos Estratégicos (tabla editable, sin depender del Excel) ─────────
+        "hitos_tabla": pd.DataFrame({
+            "Objetivo Estratégico": [
+                "Excelencia ERP",
+                "Eficiencia Operativa",
+                "Seguridad de la Información",
+                "Datos Confiables",
+                "Integración",
+            ],
+            "Hito": [
+                "Cierre módulo de compras",
+                "Automatización proceso nómina",
+                "Implementación MDM corporativo",
+                "Tablero de calidad de datos",
+                "API hub empresarial",
+            ],
+            "Fecha":        ["2026-03-31", "2026-03-31", "2026-06-30", "2026-06-30", "2026-09-30"],
+            "Responsable":  ["Jose Tellez", "Lizeth Castro", "Viviana Gallego", "Diego Barahona", "Jorge Villarraga"],
+            "Estado (%)":   [40, 60, 20, 50, 10],
+            "Comentario":   ["En desarrollo", "En pruebas", "Por iniciar", "En análisis", "Por definir"],
+        }),
     }
     for key, val in defaults.items():
         if key not in st.session_state:
@@ -1536,112 +1556,163 @@ def config_seguridad():
     st.markdown("<br>", unsafe_allow_html=True)
 
 
+def config_hitos():
+    """Tabla editable de hitos estratégicos — completamente independiente del Excel."""
+    _section_divider("📍", "Hitos Estratégicos por Objetivo")
+    st.markdown(
+        "<div style='font-size:12px;color:#64748b;margin-bottom:10px;'>"
+        "Agrega, edita o elimina hitos. Los cambios persisten durante la sesión. "
+        "Usa <b>+ Agregar fila</b> para nuevos hitos.</div>",
+        unsafe_allow_html=True,
+    )
+    OBJS_OPTS = [
+        "Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
+        "Integración", "Seguridad de la Información",
+    ]
+    edited_h = st.data_editor(
+        st.session_state["hitos_tabla"],
+        num_rows="dynamic",
+        use_container_width=True,
+        key="editor_hitos",
+        column_config={
+            "Objetivo Estratégico": st.column_config.SelectboxColumn(
+                "Objetivo", options=OBJS_OPTS, width="medium", required=True,
+            ),
+            "Hito": st.column_config.TextColumn(
+                "Hito / Entregable", width="large", required=True,
+            ),
+            "Fecha": st.column_config.TextColumn(
+                "Fecha límite", width="small", help="Formato: YYYY-MM-DD",
+            ),
+            "Responsable": st.column_config.TextColumn(
+                "Responsable", width="medium",
+            ),
+            "Estado (%)": st.column_config.NumberColumn(
+                "Estado (%)", min_value=0, max_value=100, step=5,
+                format="%d%%", width="small",
+            ),
+            "Comentario": st.column_config.TextColumn(
+                "Comentario", width="large",
+            ),
+        },
+    )
+    st.session_state["hitos_tabla"] = edited_h
+
+    # ── Mini resumen de avance de hitos por objetivo ─────────────────────────
+    if not edited_h.empty:
+        try:
+            resumen = (
+                edited_h.groupby("Objetivo Estratégico")["Estado (%)"]
+                .mean().round(1).reset_index()
+                .rename(columns={"Estado (%)": "Avance %"})
+            )
+            st.markdown(
+                "<div style='font-size:11px;font-weight:600;color:#8fa0b8;"
+                "text-transform:uppercase;letter-spacing:.6px;margin:14px 0 8px;'>"
+                "Avance promedio de hitos por objetivo</div>",
+                unsafe_allow_html=True,
+            )
+            cols_h = st.columns(min(len(resumen), 5))
+            for idx, (_, row) in enumerate(resumen.iterrows()):
+                prom  = float(row["Avance %"])
+                color = semaforo_color(prom)
+                lbl   = str(row["Objetivo Estratégico"])
+                lbl_s = lbl[:16] + "…" if len(lbl) > 16 else lbl
+                with cols_h[idx % len(cols_h)]:
+                    st.markdown(
+                        f"<div style='background:white;border:1px solid #e2e8f0;"
+                        f"border-radius:10px;padding:10px 12px;text-align:center;'>"
+                        f"<div style='font-size:10px;color:#8fa0b8;font-weight:600;"
+                        f"margin-bottom:4px;'>{lbl_s}</div>"
+                        f"<div style='font-size:1.6rem;font-weight:900;color:{color};'>"
+                        f"{prom:.0f}%</div></div>",
+                        unsafe_allow_html=True,
+                    )
+        except Exception:
+            pass  # tabla vacía o sin columnas esperadas
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 15. GRÁFICOS ESTRATÉGICOS
 # ─────────────────────────────────────────────────────────────────────────────
 def chart_radar_estrategico(kpis: dict) -> go.Figure:
     """Radar de araña con los 5 objetivos estratégicos."""
     OBJS = [
-        "Eficiencia Operativa",
-        "Datos Confiables",
-        "Excelencia ERP",
-        "Integración",
-        "Seguridad de la Información",
+        "Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
+        "Integración", "Seguridad de la Información",
     ]
-    values = [kpis[o]["pct"] for o in OBJS]
-    values_closed = values + [values[0]]   # cerrar polígono
+    values        = [kpis[o]["pct"] for o in OBJS]
+    values_closed = values + [values[0]]
     labels_closed = OBJS + [OBJS[0]]
 
     fig = go.Figure()
-    # Zona sombreada de meta (100%)
     fig.add_trace(go.Scatterpolar(
-        r=[100] * (len(OBJS) + 1),
-        theta=labels_closed,
-        fill="toself",
-        fillcolor="rgba(226,232,240,0.4)",
+        r=[100] * (len(OBJS) + 1), theta=labels_closed,
+        fill="toself", fillcolor="rgba(226,232,240,0.4)",
         line=dict(color="#e2e8f0", width=1),
-        name="Meta 100%",
-        hoverinfo="skip",
+        name="Meta 100%", hoverinfo="skip",
     ))
-    # Valores reales
     fig.add_trace(go.Scatterpolar(
-        r=values_closed,
-        theta=labels_closed,
-        fill="toself",
-        fillcolor="rgba(29,106,245,0.18)",
+        r=values_closed, theta=labels_closed,
+        fill="toself", fillcolor="rgba(29,106,245,0.18)",
         line=dict(color=COLORS["primary"], width=3),
         marker=dict(size=8, color=COLORS["primary"]),
         name="Cumplimiento actual",
         hovertemplate="<b>%{theta}</b><br>%{r:.1f}%<extra></extra>",
     ))
-
     fig.update_layout(
         polar=dict(
             radialaxis=dict(
                 visible=True, range=[0, 100],
-                ticksuffix="%", tickfont=dict(size=10, color="#8fa0b8"),
+                ticksuffix="%",
+                tickfont=dict(size=10, color="#8fa0b8"),
                 gridcolor="#e2e8f0", linecolor="#e2e8f0",
             ),
             angularaxis=dict(
-                tickfont=dict(size=12, color="#334155", family="Inter, sans-serif"),
+                tickfont=dict(size=12, color="#334155"),
                 gridcolor="#e2e8f0", linecolor="#e2e8f0",
             ),
             bgcolor="white",
         ),
         showlegend=True,
-        legend=dict(orientation="h", y=-0.08, x=0.5, xanchor="center",
-                    font=dict(size=11, family="Inter, sans-serif")),
+        legend=dict(orientation="h", y=-0.1, x=0.5, xanchor="center"),
         paper_bgcolor="white",
-        margin=dict(l=40, r=40, t=20, b=40),
-        height=400,
-        font=dict(family="Inter, sans-serif"),
+        margin=dict(l=40, r=40, t=20, b=50),
+        height=420,
     )
     return fig
 
 
 def chart_barras_objetivos(kpis: dict) -> go.Figure:
     """Barras horizontales comparativas de los 5 objetivos."""
-    OBJS = [
-        "Eficiencia Operativa",
-        "Datos Confiables",
-        "Excelencia ERP",
-        "Integración",
-        "Seguridad de la Información",
+    OBJS  = [
+        "Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
+        "Integración", "Seguridad de la Información",
     ]
     pcts   = [kpis[o]["pct"] for o in OBJS]
     colors = [semaforo_color(p) for p in pcts]
 
     fig = go.Figure(go.Bar(
-        x=pcts,
-        y=OBJS,
-        orientation="h",
-        marker_color=colors,
-        marker_line_width=0,
+        x=pcts, y=OBJS, orientation="h",
+        marker_color=colors, marker_line_width=0,
         text=[f"{p:.1f}%" for p in pcts],
         textposition="outside",
-        textfont=dict(size=13, family="Inter, sans-serif"),
+        textfont=dict(size=12),
         cliponaxis=False,
     ))
     fig.update_layout(
-        xaxis=dict(range=[0, 115], showgrid=True, gridcolor="#f1f5f9",
-                   ticksuffix="%", zeroline=False, title=None,
-                   tickfont=dict(size=11, color="#8fa0b8")),
-        yaxis=dict(showgrid=False, title=None, automargin=True,
-                   tickfont=dict(size=12, color="#334155")),
+        xaxis=dict(range=[0, 118], showgrid=True, gridcolor="#f1f5f9",
+                   ticksuffix="%", zeroline=False, title=None),
+        yaxis=dict(showgrid=False, title=None, automargin=True),
         plot_bgcolor="white", paper_bgcolor="white",
-        margin=dict(l=0, r=60, t=8, b=8),
-        height=260,
-        bargap=0.38,
-        font=dict(family="Inter, sans-serif"),
-        shapes=[
-            dict(type="line", x0=80, x1=80, y0=-0.5, y1=len(OBJS)-0.5,
-                 line=dict(color="#0da063", width=1.5, dash="dash")),
-        ],
-        annotations=[
-            dict(x=81, y=len(OBJS)-0.5, text="Meta 80%",
-                 font=dict(size=10, color="#0da063"), showarrow=False,
-                 xanchor="left", yanchor="top"),
-        ],
+        margin=dict(l=0, r=55, t=8, b=8),
+        height=240, bargap=0.38,
+        shapes=[dict(type="line", x0=80, x1=80, y0=-0.5, y1=len(OBJS)-0.5,
+                     line=dict(color="#0da063", width=1.5, dash="dash"))],
+        annotations=[dict(x=81, y=len(OBJS)-0.5, text="Meta 80%",
+                          font=dict(size=10, color="#0da063"),
+                          showarrow=False, xanchor="left", yanchor="top")],
     )
     return fig
 
@@ -1650,32 +1721,24 @@ def chart_reqs_por_categoria(df: pd.DataFrame) -> go.Figure:
     """Barras de reqs por categoría estratégica desde el Excel."""
     if df.empty:
         return go.Figure()
-    cat = (
-        df.groupby("categoria").size()
-        .reset_index(name="count")
-        .sort_values("count", ascending=True)
-    )
+    cat = df.groupby("categoria").size().reset_index(name="count").sort_values("count", ascending=True)
     if cat.empty:
         return go.Figure()
-    colors = [CATEGORY_COLORS.get(c, "#94a3b8") for c in cat["categoria"]]
+    colors  = [CATEGORY_COLORS.get(c, "#94a3b8") for c in cat["categoria"]]
     max_val = cat["count"].max()
     fig = go.Figure(go.Bar(
         x=cat["count"], y=cat["categoria"], orientation="h",
         marker_color=colors, marker_line_width=0,
         text=cat["count"], textposition="outside",
-        textfont=dict(size=12, family="Inter, sans-serif"),
-        cliponaxis=False,
+        textfont=dict(size=12), cliponaxis=False,
     ))
     fig.update_layout(
-        xaxis=dict(range=[0, max_val * 1.25], showgrid=True, gridcolor="#f1f5f9",
-                   title=None, zeroline=False, tickfont=dict(size=11, color="#8fa0b8")),
-        yaxis=dict(showgrid=False, title=None, automargin=True,
-                   tickfont=dict(size=12, color="#334155")),
+        xaxis=dict(range=[0, max_val * 1.28], showgrid=True, gridcolor="#f1f5f9",
+                   title=None, zeroline=False),
+        yaxis=dict(showgrid=False, title=None, automargin=True),
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(l=0, r=50, t=8, b=8),
-        height=max(200, 42 * len(cat) + 30),
-        bargap=0.35,
-        font=dict(family="Inter, sans-serif"),
+        height=max(200, 42 * len(cat) + 30), bargap=0.35,
     )
     return fig
 
@@ -1684,7 +1747,6 @@ def chart_reqs_por_area(df: pd.DataFrame) -> go.Figure:
     """Barras de reqs por área de negocio (etiquetas sin categoría estratégica)."""
     if df.empty:
         return go.Figure()
-
     skip_patterns = list(STRATEGIC_PATTERNS.values()) + [
         r"excelencia erp", r"eficiencia operativa",
         r"seguridad", r"datos confiables", r"integraci",
@@ -1703,42 +1765,196 @@ def chart_reqs_por_area(df: pd.DataFrame) -> go.Figure:
     if not area_counts:
         return go.Figure()
 
-    areas = (
-        pd.Series(area_counts).sort_values(ascending=False).head(12).reset_index()
-    )
+    areas = pd.Series(area_counts).sort_values(ascending=False).head(12).reset_index()
     areas.columns = ["Área", "Cantidad"]
-    max_y = areas["Cantidad"].max()
+    max_y   = areas["Cantidad"].max()
     palette = ["#1d6af5","#0da063","#6d28d9","#0891b2","#d97706","#e03030",
                "#ea580c","#059669","#7c3aed","#dc2626","#db2777","#2563eb"]
-    colors = [palette[i % len(palette)] for i in range(len(areas))]
-
+    colors  = [palette[i % len(palette)] for i in range(len(areas))]
     fig = go.Figure(go.Bar(
         x=areas["Área"], y=areas["Cantidad"],
         marker_color=colors, marker_line_width=0,
         text=areas["Cantidad"], textposition="outside",
-        textfont=dict(size=11, family="Inter, sans-serif"),
-        cliponaxis=False,
+        textfont=dict(size=11), cliponaxis=False,
     ))
     fig.update_layout(
-        xaxis=dict(title=None, tickangle=-35, showgrid=False, type="category",
-                   tickfont=dict(size=11, color="#334155"), automargin=True),
-        yaxis=dict(title=None, showgrid=True, gridcolor="#f1f5f9", zeroline=False,
-                   range=[0, max_y * 1.25], tickfont=dict(size=11, color="#8fa0b8")),
+        xaxis=dict(title=None, tickangle=-35, showgrid=False, type="category", automargin=True),
+        yaxis=dict(title=None, showgrid=True, gridcolor="#f1f5f9",
+                   zeroline=False, range=[0, max_y * 1.25]),
         plot_bgcolor="white", paper_bgcolor="white",
         margin=dict(l=10, r=20, t=8, b=10),
         height=280, bargap=0.35,
-        font=dict(family="Inter, sans-serif", size=11),
     )
     return fig
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 16. VISTA ESTRATÉGICA – VICEPRESIDENCIA
+# 16A. RENDER SUB-SECCIONES ESTRATÉGICAS
+# ─────────────────────────────────────────────────────────────────────────────
+def _sec_header(icon: str, text: str):
+    """Encabezado de sección estilo ejecutivo, sin pandas Styler."""
+    st.markdown(
+        f"<div style='font-size:11px;font-weight:700;letter-spacing:1.2px;"
+        f"text-transform:uppercase;color:#8fa0b8;border-bottom:1px solid #e2e8f0;"
+        f"padding-bottom:6px;margin:1.6rem 0 1rem;'>{icon} {text}</div>",
+        unsafe_allow_html=True,
+    )
+
+
+def render_strategic_kpis(skpis: dict, objs_order: list, obj_colors: dict):
+    """
+    SECCIÓN 1 – SUPERIOR
+    5 tarjetas KPI en fila horizontal, una por objetivo estratégico.
+    Semáforo automático: >80% verde, 50-80% amarillo, <50% rojo.
+    """
+    _sec_header("📊", "Cumplimiento por Objetivo Estratégico")
+    cols_kpi = st.columns(5)
+    for i, obj in enumerate(objs_order):
+        data  = skpis[obj]
+        color = obj_colors[obj]
+        meta_s = (
+            f"Meta: {data['meta']}  ·  Avance: {data['avance']}"
+            if data["meta"] != "—"
+            else f"Avance: {data['avance']}"
+        )
+        with cols_kpi[i]:
+            st.markdown(
+                obj_card_html(obj, data["pct"], meta_s, color),
+                unsafe_allow_html=True,
+            )
+    st.markdown("<br>", unsafe_allow_html=True)
+
+
+def render_global_vision(skpis: dict):
+    """
+    SECCIÓN 2 – CENTRAL
+    Radar estratégico + indicador global + barras comparativas.
+    Visualmente separada de KPIs y configuración.
+    """
+    _sec_header("🎯", "Visión Global Estratégica")
+
+    global_pct = skpis["_global"]
+    col_left, col_right = st.columns([1, 2])
+
+    with col_left:
+        # ── Indicador global ───────────────────────────────────────────────
+        st.markdown(
+            f"<div class='global-kpi'>"
+            f"<div class='global-kpi-label'>Cumplimiento Estratégico Global</div>"
+            f"<div class='global-kpi-value'>{global_pct:.1f}%</div>"
+            f"<div class='global-kpi-sub'>Promedio de 5 objetivos TD 2026</div>"
+            f"</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        # ── Tabla resumen ejecutiva (plain DataFrame) ──────────────────────
+        _sec_header("📋", "Tabla Resumen Ejecutiva")
+        OBJS_ORDER_LOCAL = [
+            "Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
+            "Integración", "Seguridad de la Información",
+        ]
+        rows = []
+        for obj in OBJS_ORDER_LOCAL:
+            d   = skpis[obj]
+            pct = d["pct"]
+            semaforo = "🟢" if pct > 80 else ("🟡" if pct >= 50 else "🔴")
+            estado   = "En meta" if pct > 80 else ("En seguimiento" if pct >= 50 else "En riesgo")
+            rows.append({
+                " ":    semaforo,
+                "Objetivo":         obj,
+                "Meta":             str(d["meta"]),
+                "Avance":           str(d["avance"]),
+                "% Cumpl.":         f"{pct:.1f}%",
+                "Estado":           estado,
+            })
+        # ── Sin pandas Styler — plain st.dataframe, 100% Streamlit Cloud OK ─
+        summary_df = pd.DataFrame(rows).reset_index(drop=True)
+        st.dataframe(
+            summary_df,
+            use_container_width=True,
+            height=220,
+            hide_index=True,
+            column_config={
+                " ":  st.column_config.TextColumn("",        width="small"),
+                "Objetivo":     st.column_config.TextColumn("Objetivo",   width="large"),
+                "Meta":         st.column_config.TextColumn("Meta",       width="small"),
+                "Avance":       st.column_config.TextColumn("Avance",     width="small"),
+                "% Cumpl.":     st.column_config.TextColumn("% Cumpl.",   width="small"),
+                "Estado":       st.column_config.TextColumn("Estado",     width="medium"),
+            },
+        )
+        st.markdown("<br>", unsafe_allow_html=True)
+        # ── Barras comparativas ────────────────────────────────────────────
+        st.markdown(
+            "<div style='font-size:12px;font-weight:600;color:#64748b;margin-bottom:4px;'>"
+            "Comparativa por objetivo:</div>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(chart_barras_objetivos(skpis),
+                        use_container_width=True, key="ev_barras")
+
+    with col_right:
+        # ── Radar ─────────────────────────────────────────────────────────
+        st.markdown(
+            "<div style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
+            "Radar Estratégico — Perfil de cumplimiento</div>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(chart_radar_estrategico(skpis),
+                        use_container_width=True, key="ev_radar")
+
+
+def render_strategic_configuration():
+    """
+    SECCIÓN 3 – INFERIOR
+    Panel de configuración editable de metas y avances.
+    Incluye tabla de hitos estratégicos.
+    Valores persisten en st.session_state durante la sesión.
+    """
+    _sec_header("⚙️", "Configuración de Metas Estratégicas — Editable")
+
+    st.markdown(
+        "<div class='config-panel'>"
+        "<div class='config-title'>✏️ Edita las metas y avances de cada objetivo. "
+        "Los KPIs de arriba se actualizan automáticamente al recargar.</div></div>",
+        unsafe_allow_html=True,
+    )
+
+    # ── Tabs por objetivo ──────────────────────────────────────────────────
+    tab_eo, tab_dc, tab_erp, tab_int, tab_seg = st.tabs([
+        "1️⃣ Eficiencia Op.",
+        "2️⃣ Datos Confiables",
+        "3️⃣ Excelencia ERP",
+        "4️⃣ Integración",
+        "5️⃣ Seguridad Info.",
+    ])
+    with tab_eo:  config_eficiencia_operativa()
+    with tab_dc:  config_datos_confiables()
+    with tab_erp: config_excelencia_erp()
+    with tab_int: config_integracion()
+    with tab_seg: config_seguridad()
+
+    # ── Tabla de hitos (siempre visible, no dentro de un tab) ─────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    with st.expander("📍 Hitos Estratégicos por Objetivo (editable)", expanded=True):
+        config_hitos()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 16B. VISTA ESTRATÉGICA – VICEPRESIDENCIA (ORQUESTADOR)
 # ─────────────────────────────────────────────────────────────────────────────
 def create_executive_view(df: pd.DataFrame):
-    """Vista completa de Indicadores Estratégicos – Vicepresidencia."""
+    """
+    Vista Indicadores Estratégicos – Vicepresidencia.
 
-    # ── Header ──────────────────────────────────────────────────────────────
+    Orden de secciones:
+    1️⃣  SUPERIOR  – 5 KPI tarjetas (render_strategic_kpis)
+    2️⃣  CENTRAL   – Radar + Global + Tabla resumen (render_global_vision)
+    3️⃣  INFERIOR  – Configuración editable + Hitos (render_strategic_configuration)
+    +   Indicadores de portafolio desde el Excel (opcional)
+    """
+
+    # ── Header ─────────────────────────────────────────────────────────────
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.markdown(
@@ -1762,51 +1978,10 @@ def create_executive_view(df: pd.DataFrame):
                 unsafe_allow_html=True,
             )
 
-    # ════════════════════════════════════════════════════════════════════════
-    # PANEL DE CONFIGURACIÓN EDITABLE
-    # ════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        "<div style='font-size:11px;font-weight:700;letter-spacing:1.2px;"
-        "text-transform:uppercase;color:#8fa0b8;border-bottom:1px solid #e2e8f0;"
-        "padding-bottom:6px;margin:1.4rem 0 1rem;'>⚙️ Configuración de Metas Estratégicas</div>",
-        unsafe_allow_html=True,
-    )
-
-    with st.container():
-        st.markdown(
-            "<div class='config-panel'>"
-            "<div class='config-title'>✏️ Edita las metas y avances de cada objetivo — "
-            "los KPIs se actualizan automáticamente</div></div>",
-            unsafe_allow_html=True,
-        )
-
-    tab_eo, tab_dc, tab_erp, tab_int, tab_seg = st.tabs([
-        "1️⃣ Eficiencia Op.",
-        "2️⃣ Datos Confiables",
-        "3️⃣ Excelencia ERP",
-        "4️⃣ Integración",
-        "5️⃣ Seguridad Info.",
-    ])
-
-    with tab_eo:
-        config_eficiencia_operativa()
-    with tab_dc:
-        config_datos_confiables()
-    with tab_erp:
-        config_excelencia_erp()
-    with tab_int:
-        config_integracion()
-    with tab_seg:
-        config_seguridad()
-
-    # ── Calcular KPIs estratégicos ─────────────────────────────────────────
-    skpis = calculate_strategic_kpis()
+    # ── Constantes compartidas ─────────────────────────────────────────────
     OBJS_ORDER = [
-        "Eficiencia Operativa",
-        "Datos Confiables",
-        "Excelencia ERP",
-        "Integración",
-        "Seguridad de la Información",
+        "Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
+        "Integración", "Seguridad de la Información",
     ]
     OBJ_COLORS = {
         "Eficiencia Operativa":        COLORS["green"],
@@ -1815,183 +1990,69 @@ def create_executive_view(df: pd.DataFrame):
         "Integración":                 COLORS["cyan"],
         "Seguridad de la Información": COLORS["red"],
     }
-    global_pct = skpis["_global"]
+
+    # ── Calcular KPIs (siempre, basado en session_state) ──────────────────
+    skpis = calculate_strategic_kpis()
 
     # ════════════════════════════════════════════════════════════════════════
-    # KPIs ESTRATÉGICOS — TARJETAS GRANDES
+    # 1️⃣  SECCIÓN SUPERIOR — KPIs por objetivo
     # ════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        "<div class='section-header'>📊 Cumplimiento por Objetivo Estratégico</div>",
-        unsafe_allow_html=True,
-    )
-    cols_kpi = st.columns(5)
-    for i, obj in enumerate(OBJS_ORDER):
-        data   = skpis[obj]
-        color  = OBJ_COLORS[obj]
-        meta_s = f"Meta: {data['meta']}  ·  Avance: {data['avance']}" if data["meta"] != "—" else f"Avance: {data['avance']}"
-        with cols_kpi[i]:
-            st.markdown(
-                obj_card_html(obj, data["pct"], meta_s, color),
-                unsafe_allow_html=True,
-            )
-
-    st.markdown("<br>", unsafe_allow_html=True)
+    render_strategic_kpis(skpis, OBJS_ORDER, OBJ_COLORS)
 
     # ════════════════════════════════════════════════════════════════════════
-    # INDICADOR GLOBAL + RADAR
+    # 2️⃣  SECCIÓN CENTRAL — Radar + Global + Tabla resumen
     # ════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        "<div class='section-header'>🎯 Visión Global Estratégica</div>",
-        unsafe_allow_html=True,
-    )
-
-    col_global, col_radar = st.columns([1, 2])
-
-    with col_global:
-        badge_g  = semaforo_badge(global_pct)
-        color_g  = semaforo_color(global_pct)
-        bar_g    = min(int(global_pct), 100)
-        st.markdown(
-            f"<div class='global-kpi'>"
-            f"<div class='global-kpi-label'>Cumplimiento Estratégico Global</div>"
-            f"<div class='global-kpi-value'>{global_pct:.1f}%</div>"
-            f"<div class='global-kpi-sub'>Promedio de 5 objetivos TD 2026</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-        st.markdown("<br>", unsafe_allow_html=True)
-        st.markdown(
-            "<p style='font-size:12px;font-weight:600;color:#64748b;'>"
-            "Comparativa por objetivo:</p>",
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(
-            chart_barras_objetivos(skpis),
-            use_container_width=True, key="ev_barras",
-        )
-
-    with col_radar:
-        st.markdown(
-            "<p style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
-            "Radar Estratégico — Perfil de cumplimiento</p>",
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(
-            chart_radar_estrategico(skpis),
-            use_container_width=True, key="ev_radar",
-        )
+    render_global_vision(skpis)
 
     # ════════════════════════════════════════════════════════════════════════
-    # TABLA RESUMEN EJECUTIVA
+    # 3️⃣  SECCIÓN INFERIOR — Configuración editable + Hitos
     # ════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        "<div class='section-header'>📋 Tabla Resumen Ejecutiva</div>",
-        unsafe_allow_html=True,
-    )
-
-    summary_rows = []
-    for obj in OBJS_ORDER:
-        d   = skpis[obj]
-        pct = d["pct"]
-        estado = "🟢 En meta" if pct > 80 else ("🟡 En seguimiento" if pct >= 50 else "🔴 En riesgo")
-        summary_rows.append({
-            "Objetivo Estratégico": obj,
-            "Meta":                 str(d["meta"]),
-            "Avance":               str(d["avance"]),
-            "% Cumplimiento":       f"{pct:.1f}%",
-            "Estado":               estado,
-        })
-    summary_df = pd.DataFrame(summary_rows)
-
-    def _style_summary(row):
-        pct_val = float(str(row["% Cumplimiento"]).replace("%", ""))
-        if pct_val > 80:
-            bg = "background: #f0fdf4"
-        elif pct_val >= 50:
-            bg = "background: #fefce8"
-        else:
-            bg = "background: #fef2f2"
-        return [bg] * len(row)
-
-    styled_summary = (
-        summary_df.style
-        .apply(_style_summary, axis=1)
-        .set_properties(**{"font-size": "13px", "text-align": "left"})
-        .set_properties(subset=["% Cumplimiento"],
-                        **{"font-weight": "700", "text-align": "center"})
-        .set_properties(subset=["Estado"],
-                        **{"text-align": "center"})
-        .set_table_styles([
-            {"selector": "thead th", "props": [
-                ("background", "#f4f6fb"), ("font-size", "10px"),
-                ("font-weight", "700"), ("text-transform", "uppercase"),
-                ("letter-spacing", "0.6px"), ("color", "#64748b"),
-                ("padding", "10px 16px"), ("border-bottom", "2px solid #e2e8f0"),
-            ]},
-            {"selector": "tbody td", "props": [
-                ("padding", "12px 16px"), ("border-bottom", "1px solid #f1f5f9"),
-            ]},
-        ])
-    )
-    summary_df.index = range(1, len(summary_df) + 1)
-    st.dataframe(styled_summary, use_container_width=True, height=260)
+    render_strategic_configuration()
 
     # ════════════════════════════════════════════════════════════════════════
-    # INDICADORES DE REQUERIMIENTOS DEL EXCEL
+    # + INDICADORES DE PORTAFOLIO DEL EXCEL (si hay archivo cargado)
     # ════════════════════════════════════════════════════════════════════════
-    st.markdown(
-        "<div class='section-header'>📂 Indicadores de Portafolio — Datos del Excel</div>",
-        unsafe_allow_html=True,
-    )
+    _sec_header("📂", "Indicadores de Portafolio — Datos del Excel")
 
     if df.empty:
-        st.info("📭 Carga un archivo Excel desde el panel lateral para ver los indicadores de portafolio.")
-        return
+        st.info("📭 Carga un archivo Excel desde el panel lateral para ver los "
+                "indicadores de portafolio (requerimientos, áreas, categorías).")
+    else:
+        total_reqs = len(df)
+        comp       = (df["progreso"] == "Completado").sum()
+        sin_asig   = (df["asignado_raw"] == "Sin asignar").sum()
 
-    total_reqs = len(df)
-    col_r1, col_r2, col_r3, col_r4 = st.columns(4)
-    col_r1.metric("Total Requerimientos", total_reqs)
-    col_r2.metric(
-        "Por categoría estratégica",
-        df["categoria"].nunique(),
-        help="Categorías únicas detectadas en etiquetas",
-    )
-    comp = (df["progreso"] == "Completado").sum()
-    col_r3.metric("Completados", comp, f"{round(comp/total_reqs*100,1)}% del total")
-    col_r4.metric(
-        "Sin asignar",
-        (df["asignado_raw"] == "Sin asignar").sum(),
-        delta_color="inverse",
-    )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Total Requerimientos", total_reqs)
+        c2.metric("Categorías estratégicas", df["categoria"].nunique())
+        c3.metric("Completados", comp,
+                  f"{round(comp / total_reqs * 100, 1)}% del total")
+        c4.metric("Sin asignar", sin_asig, delta_color="inverse")
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_rcat, col_rarea = st.columns([1, 1.6])
+        st.markdown("<br>", unsafe_allow_html=True)
+        col_rcat, col_rarea = st.columns([1, 1.6])
 
-    with col_rcat:
-        st.markdown(
-            "<p style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
-            "Requerimientos por Categoría Estratégica</p>",
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(
-            chart_reqs_por_categoria(df),
-            use_container_width=True, key="ev_cat",
-        )
+        with col_rcat:
+            st.markdown(
+                "<div style='font-size:13px;font-weight:600;color:#334155;"
+                "margin-bottom:4px;'>Reqs. por Categoría Estratégica</div>",
+                unsafe_allow_html=True,
+            )
+            st.plotly_chart(chart_reqs_por_categoria(df),
+                            use_container_width=True, key="ev_cat")
 
-    with col_rarea:
-        st.markdown(
-            "<p style='font-size:13px;font-weight:600;color:#334155;margin-bottom:4px;'>"
-            "Requerimientos por Área de Negocio</p>",
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(
-            chart_reqs_por_area(df),
-            use_container_width=True, key="ev_area",
-        )
+        with col_rarea:
+            st.markdown(
+                "<div style='font-size:13px;font-weight:600;color:#334155;"
+                "margin-bottom:4px;'>Reqs. por Área de Negocio</div>",
+                unsafe_allow_html=True,
+            )
+            st.plotly_chart(chart_reqs_por_area(df),
+                            use_container_width=True, key="ev_area")
 
     st.caption(
         "Vista Estratégica TD 2026 · Vicepresidencia Transformación Digital · "
-        "Metas editables — no requiere modificar el código"
+        "Metas editables en tiempo real — sin modificar el código"
     )
 
 
