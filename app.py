@@ -2020,7 +2020,7 @@ def create_executive_view(df: pd.DataFrame):
     st.caption("Vista Estratégica TD 2026 · Vicepresidencia Transformación Digital · "
                "Metas editables en tiempo real")
 
-
+# prueba deploy
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 17. GENERADOR DE INFORME PDF — "Informe TD 2026"
