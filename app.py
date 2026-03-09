@@ -14,8 +14,8 @@ from datetime import datetime, date
 import re
 import io
 import json
-import os
 import csv
+import os
 import warnings
 from pathlib import Path
 
@@ -74,15 +74,33 @@ PROGRESS_MAP = {
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# REQ 3 & 4: CAPA DE PERSISTENCIA — JSON + CSV histórico
+# CAPA DE PERSISTENCIA — REQ 2, 3
+# Arquitectura de archivos:
+#   data/
+#     strategic_kpis.json              ← metas y avances de KPIs (REQ 2)
+#     strategic_history.csv            ← historial de cambios de KPIs (REQ 2)
+#     entregables_estrategicos.csv     ← tabla unificada de entregables (REQ 1/2)
+#     planner_exports/
+#       planner_2026_03.xlsx           ← Excels guardados automáticamente (REQ 3)
 # ─────────────────────────────────────────────────────────────────────────────
-# Rutas de persistencia — compatibles con Streamlit Cloud y local
 _DATA_DIR         = Path("data")
+_PLANNER_DIR      = _DATA_DIR / "planner_exports"
 _KPI_FILE         = _DATA_DIR / "strategic_kpis.json"
 _HISTORY_FILE     = _DATA_DIR / "strategic_history.csv"
-_HISTORY_COLS     = ["fecha", "objetivo", "meta", "avance"]
+_ENTREGABLES_FILE = _DATA_DIR / "entregables_estrategicos.csv"
 
-# Mapeo interno _sd ↔ nombre de objetivo
+_HISTORY_COLS = ["fecha", "objetivo", "meta", "avance"]
+
+# Columnas de la tabla "Principales Entregables Estratégicos" (5 campos requeridos)
+_ENT_COLS = [
+    "Entregable",
+    "Responsable",
+    "Objetivo Estratégico",
+    "Fecha Compromiso",
+    "Estado",
+]
+
+# Mapa de keys _sd ↔ nombre de objetivo (para persistencia JSON)
 _OBJ_SD_MAP = {
     "Eficiencia Operativa":        ("eo_meta",  "eo_completados"),
     "Datos Confiables":            ("dc_meta",  "dc_completados"),
@@ -92,50 +110,35 @@ _OBJ_SD_MAP = {
 }
 
 
-def _ensure_data_dir():
-    """Crea el directorio data/ si no existe. Silencia errores en entornos read-only."""
+def _ensure_dirs():
+    """Crea data/ y data/planner_exports/ si no existen. Silencia errores read-only."""
     try:
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _PLANNER_DIR.mkdir(parents=True, exist_ok=True)
     except OSError:
         pass
 
 
+# ── KPIs → JSON ─────────────────────────────────────────────────────────────
 def load_kpis_from_json() -> dict | None:
-    """
-    REQ 3: Carga metas y avances desde data/strategic_kpis.json.
-    Retorna None si el archivo no existe o está corrupto.
-
-    Estructura del JSON:
-    {
-      "Eficiencia Operativa": {"meta": 20, "avance": 12},
-      ...
-    }
-    """
+    """REQ 2: Carga metas y avances desde strategic_kpis.json."""
     try:
         if not _KPI_FILE.exists():
             return None
         with _KPI_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        # Validación básica
-        if not isinstance(data, dict):
-            return None
-        return data
+        return data if isinstance(data, dict) else None
     except Exception:
         return None
 
 
-def save_kpis_to_json(sd: dict):
-    """
-    REQ 3: Guarda las metas y avances actuales en data/strategic_kpis.json.
-    Solo escribe si el directorio es escribible.
-    """
-    _ensure_data_dir()
-    payload = {}
-    for obj, (meta_k, comp_k) in _OBJ_SD_MAP.items():
-        payload[obj] = {
-            "meta":   int(sd.get(meta_k, 1)),
-            "avance": int(sd.get(comp_k, 0)),
-        }
+def save_kpis_to_json(sd: dict) -> bool:
+    """REQ 2: Guarda metas y avances en strategic_kpis.json."""
+    _ensure_dirs()
+    payload = {
+        obj: {"meta": int(sd.get(mk, 1)), "avance": int(sd.get(ck, 0))}
+        for obj, (mk, ck) in _OBJ_SD_MAP.items()
+    }
     try:
         with _KPI_FILE.open("w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -144,51 +147,101 @@ def save_kpis_to_json(sd: dict):
         return False
 
 
-def append_history_row(sd: dict):
-    """
-    REQ 4: Añade una fila al CSV histórico por cada objetivo.
-    Columnas: fecha | objetivo | meta | avance
-    """
-    _ensure_data_dir()
+def _apply_json_to_sd(sd: dict, data: dict):
+    """Aplica un dict JSON (metas/avances) al dict _sd en memoria."""
+    for obj, (mk, ck) in _OBJ_SD_MAP.items():
+        if obj in data:
+            e = data[obj]
+            if "meta"   in e: sd[mk] = int(e["meta"])
+            if "avance" in e: sd[ck] = int(e["avance"])
+
+
+# ── Histórico de cambios → CSV ───────────────────────────────────────────────
+def append_kpi_history(sd: dict) -> bool:
+    """REQ 2: Añade una fila por objetivo al CSV de historial."""
+    _ensure_dirs()
     hoy = datetime.today().strftime("%Y-%m-%d %H:%M")
-    rows = []
-    for obj, (meta_k, comp_k) in _OBJ_SD_MAP.items():
-        rows.append({
-            "fecha":    hoy,
-            "objetivo": obj,
-            "meta":     int(sd.get(meta_k, 1)),
-            "avance":   int(sd.get(comp_k, 0)),
-        })
+    rows = [
+        {"fecha": hoy, "objetivo": obj,
+         "meta": int(sd.get(mk, 1)), "avance": int(sd.get(ck, 0))}
+        for obj, (mk, ck) in _OBJ_SD_MAP.items()
+    ]
     try:
-        file_exists = _HISTORY_FILE.exists()
+        exists = _HISTORY_FILE.exists()
         with _HISTORY_FILE.open("a", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=_HISTORY_COLS)
-            if not file_exists:
-                writer.writeheader()
-            writer.writerows(rows)
+            w = csv.DictWriter(f, fieldnames=_HISTORY_COLS)
+            if not exists:
+                w.writeheader()
+            w.writerows(rows)
         return True
     except OSError:
         return False
 
 
-def load_history_df() -> pd.DataFrame:
-    """REQ 4: Carga el CSV histórico como DataFrame."""
+def load_kpi_history() -> pd.DataFrame:
+    """REQ 2: Carga el CSV de historial de KPIs."""
     try:
         if not _HISTORY_FILE.exists():
             return pd.DataFrame(columns=_HISTORY_COLS)
-        df = pd.read_csv(_HISTORY_FILE, parse_dates=["fecha"])
-        return df
+        return pd.read_csv(_HISTORY_FILE, parse_dates=["fecha"])
     except Exception:
         return pd.DataFrame(columns=_HISTORY_COLS)
 
 
-def _apply_json_to_sd(sd: dict, json_data: dict):
-    """Aplica los datos del JSON al dict _sd en memoria."""
-    for obj, (meta_k, comp_k) in _OBJ_SD_MAP.items():
-        if obj in json_data:
-            entry = json_data[obj]
-            if "meta"   in entry: sd[meta_k] = int(entry["meta"])
-            if "avance" in entry: sd[comp_k] = int(entry["avance"])
+# ── Entregables estratégicos → CSV ───────────────────────────────────────────
+def load_entregables_csv() -> pd.DataFrame:
+    """REQ 1/2: Carga data/entregables_estrategicos.csv."""
+    try:
+        if not _ENTREGABLES_FILE.exists():
+            return pd.DataFrame(columns=_ENT_COLS)
+        df = pd.read_csv(_ENTREGABLES_FILE, dtype=str).fillna("")
+        for col in _ENT_COLS:
+            if col not in df.columns:
+                df[col] = ""
+        return df[_ENT_COLS]
+    except Exception:
+        return pd.DataFrame(columns=_ENT_COLS)
+
+
+def save_entregables_csv(df: pd.DataFrame) -> bool:
+    """REQ 1/2: Guarda la tabla de entregables en disco."""
+    _ensure_dirs()
+    try:
+        df.to_csv(_ENTREGABLES_FILE, index=False, encoding="utf-8")
+        return True
+    except OSError:
+        return False
+
+
+# ── Archivos Excel de Planner → disco ───────────────────────────────────────
+def save_excel_to_disk(uploaded_file, mes_key: str) -> Path | None:
+    """REQ 3: Guarda el archivo subido en data/planner_exports/planner_YYYY_MM.xlsx."""
+    _ensure_dirs()
+    fname = f"planner_{mes_key.replace('-', '_')}.xlsx"
+    dest  = _PLANNER_DIR / fname
+    try:
+        uploaded_file.seek(0)
+        with dest.open("wb") as f:
+            f.write(uploaded_file.read())
+        return dest
+    except Exception:
+        return None
+
+
+def scan_planner_exports() -> dict:
+    """
+    REQ 3: Escanea data/planner_exports/ y retorna
+    {mes_key: Path} — ej. {"2026-03": Path("data/planner_exports/planner_2026_03.xlsx")}
+    """
+    if not _PLANNER_DIR.exists():
+        return {}
+    result = {}
+    for f in sorted(_PLANNER_DIR.glob("planner_*.xlsx")):
+        stem  = f.stem.replace("planner_", "")   # "2026_03"
+        parts = stem.split("_")
+        if len(parts) == 2 and all(p.isdigit() for p in parts):
+            result[f"{parts[0]}-{parts[1]}"] = f
+    return result
 
 # ─────────────────────────────────────────────────────────────────────────────
 # ESTILOS CSS
@@ -551,8 +604,30 @@ def preprocess_data(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     # ── Categoría estratégica ────────────────────────────────────────────────
     df["categoria"] = df["etiquetas"].apply(extract_strategic_category)
 
-    # ── Lead Time (días) ─────────────────────────────────────────────────────
-    df["lead_time_dias"] = (df["finalizacion"] - df["creacion"]).dt.days
+    # ── Lead Time (días hábiles) ──────────────────────────────────────────────
+    # Lead Time = Fecha Final - Fecha Inicio, excluyendo sábados y domingos.
+    # · Si finalizacion existe  → Fecha Final = finalizacion
+    # · Si finalizacion es nula → Fecha Final = hoy (requerimiento abierto)
+    # · Si inicio es nulo       → resultado = None (indeterminado)
+    # np.busday_count cuenta días hábiles de lunes a viernes entre dos fechas.
+    _hoy_lt = pd.Timestamp.today().normalize()
+
+    def _calc_lead_time(row):
+        fi = row["inicio"]
+        ff = row["finalizacion"]
+        if pd.isna(fi):
+            return None
+        fecha_fin = _hoy_lt if pd.isna(ff) else ff
+        try:
+            dias = int(np.busday_count(
+                fi.date() if hasattr(fi, "date") else fi,
+                fecha_fin.date() if hasattr(fecha_fin, "date") else fecha_fin,
+            ))
+            return dias if dias >= 0 else None
+        except Exception:
+            return None
+
+    df["lead_time_dias"] = df.apply(_calc_lead_time, axis=1)
 
     # ── Mes de finalización ──────────────────────────────────────────────────
     df["mes_finalizacion"] = df["finalizacion"].dt.to_period("M").astype(str)
@@ -1508,7 +1583,12 @@ def init_session_state():
             "seg_meta":        80,   # % objetivo (ej: llegar a 80%)
             "seg_completados": 0,    # % actual alcanzado
 
-            # ── Hitos estratégicos ──────────────────────────────────────────
+            # ── Principales Entregables Estratégicos (persistentes) ─────────────
+            # 5 columnas: Entregable · Responsable · Objetivo Estratégico
+            #             · Fecha Compromiso · Estado
+            "entregables_estrategicos": pd.DataFrame(columns=_ENT_COLS),
+
+            # ── Hitos estratégicos (mantenido solo para compatibilidad PDF) ───
             "hitos_tabla": pd.DataFrame({
                 "Objetivo Estratégico": [
                     "Excelencia ERP", "Eficiencia Operativa",
@@ -1521,57 +1601,71 @@ def init_session_state():
                     "Tablero de calidad de datos",
                     "API hub empresarial",
                 ],
-                # Fechas como objetos date — compatible con DateColumn de Streamlit
                 "Fecha": pd.to_datetime(["2026-03-31","2026-03-31","2026-06-30","2026-06-30","2026-09-30"]).date.tolist(),
                 "Responsable": ["Jose Tellez","Lizeth Castro","Viviana Gallego","Diego Barahona","Jorge Villarraga"],
                 "Estado (%)":  [40, 60, 20, 50, 10],
                 "Comentario":  ["En desarrollo","En pruebas","Por iniciar","En análisis","Por definir"],
             }),
 
-            # ── Entregables por objetivo ────────────────────────────────────
+            # ── Entregables por objetivo (mantenido solo para compatibilidad PDF) ──
             "entregables_tabla": pd.DataFrame({
-                "Objetivo": [
-                    "Excelencia ERP", "Excelencia ERP",
-                    "Eficiencia Operativa", "Eficiencia Operativa",
-                    "Seguridad Info.", "Seguridad Info.",
-                    "Datos Confiables", "Datos Confiables",
-                    "Integración",
-                ],
-                "Entregable": [
-                    "Documento config. módulo compras",
-                    "Manual usuario cierre contable",
-                    "Flujo automatizado de nómina",
-                    "Reporte KPI operativos mensual",
-                    "Política gestión MDM aprobada",
-                    "Plan respuesta incidentes v2",
-                    "Diccionario de datos corporativo",
-                    "Dashboard calidad de datos v1",
-                    "Especificación API hub empresarial",
-                ],
-                "Responsable": [
-                    "Jose Tellez","Jose Tellez",
-                    "Lizeth Castro","Lizeth Castro",
-                    "Viviana Gallego","Viviana Gallego",
-                    "Diego Barahona","Diego Barahona",
-                    "Jorge Villarraga",
-                ],
-                "Fecha Límite": pd.to_datetime([
-                    "2026-03-31","2026-04-30",
-                    "2026-03-31","2026-05-31",
-                    "2026-06-30","2026-08-31",
-                    "2026-04-30","2026-06-30",
-                    "2026-09-30",
-                ]).date.tolist(),
+                "Objetivo": ["Excelencia ERP","Excelencia ERP","Eficiencia Operativa",
+                             "Eficiencia Operativa","Seguridad Info.","Seguridad Info.",
+                             "Datos Confiables","Datos Confiables","Integración"],
+                "Entregable": ["Documento config. módulo compras","Manual usuario cierre contable",
+                               "Flujo automatizado de nómina","Reporte KPI operativos mensual",
+                               "Política gestión MDM aprobada","Plan respuesta incidentes v2",
+                               "Diccionario de datos corporativo","Dashboard calidad de datos v1",
+                               "Especificación API hub empresarial"],
+                "Responsable": ["Jose Tellez","Jose Tellez","Lizeth Castro","Lizeth Castro",
+                                "Viviana Gallego","Viviana Gallego","Diego Barahona","Diego Barahona",
+                                "Jorge Villarraga"],
+                "Fecha Límite": pd.to_datetime(["2026-03-31","2026-04-30","2026-03-31","2026-05-31",
+                                                "2026-06-30","2026-08-31","2026-04-30","2026-06-30",
+                                                "2026-09-30"]).date.tolist(),
                 "Prioridad": ["Alta","Media","Alta","Media","Alta","Media","Alta","Media","Alta"],
-                "Estado": ["En curso","Pendiente","En curso","Pendiente","Pendiente","Pendiente","En curso","Pendiente","Pendiente"],
+                "Estado": ["En curso","Pendiente","En curso","Pendiente","Pendiente",
+                           "Pendiente","En curso","Pendiente","Pendiente"],
                 "% Avance": [60, 0, 40, 0, 10, 0, 35, 0, 5],
             }),
+
+            # ── REQ 3: Histórico de reportes Planner ────────────────────────
+            "historial_reportes": {},
+            "mes_activo":         None,
+            "historial_meta":     {},
+
+            # ── UI state ─────────────────────────────────────────────────────
+            "sidebar_visible":    True,
+            "nav_vista":          "🟢  Control Operativo",
         }
-        # REQ 3: Al crear _sd por primera vez, cargar valores guardados en JSON
-        # si el archivo existe. Esto restaura la memoria entre reinicios.
-        _saved = load_kpis_from_json()
-        if _saved:
-            _apply_json_to_sd(st.session_state["_sd"], _saved)
+
+        # ── Cargar persistencia desde disco al primer arranque ───────────────
+        _sd = st.session_state["_sd"]
+
+        # REQ 2: KPIs desde JSON
+        _saved_kpis = load_kpis_from_json()
+        if _saved_kpis:
+            _apply_json_to_sd(_sd, _saved_kpis)
+
+        # REQ 1/2: Entregables desde CSV
+        _saved_ent = load_entregables_csv()
+        if not _saved_ent.empty:
+            _sd["entregables_estrategicos"] = _saved_ent
+
+        # REQ 3: Excel de Planner desde disco
+        _disk_exports = scan_planner_exports()
+        for _mes_key, _fpath in _disk_exports.items():
+            if _mes_key not in _sd["historial_reportes"]:
+                try:
+                    _raw = pd.read_excel(_fpath, sheet_name=0)
+                    if not _raw.empty:
+                        _df_mes, _meta_mes = preprocess_data(_raw)
+                        _sd["historial_reportes"][_mes_key] = _df_mes
+                        _sd["historial_meta"][_mes_key]     = _meta_mes
+                        if _sd["mes_activo"] is None:
+                            _sd["mes_activo"] = _mes_key
+                except Exception:
+                    pass  # silencioso — archivo corrupto o incompleto
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1667,38 +1761,28 @@ def _section_divider(emoji: str, titulo: str):
 # ─────────────────────────────────────────────────────────────────────────────
 def chart_barras_objetivos(kpis: dict) -> go.Figure:
     """
-    REQ 1/2: Gráfico de barras horizontales ejecutivo — reemplaza el radar.
-    Muestra % de cumplimiento de cada objetivo con colores semáforo y línea de meta.
+    REQ 1: Gráfico de barras ejecutivo que reemplaza al radar.
+    Doble barra: pista de fondo gris (100%) + barra de avance con color semáforo.
     """
     OBJS = ["Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
             "Integración", "Seguridad de la Información"]
-    OBJ_COLORS_MAP = {
-        "Eficiencia Operativa":        COLORS["green"],
-        "Datos Confiables":            COLORS["purple"],
-        "Excelencia ERP":              COLORS["primary"],
-        "Integración":                 COLORS["cyan"],
-        "Seguridad de la Información": COLORS["red"],
-    }
-    vals   = [kpis[o]["pct"] for o in OBJS]
-    # Semáforo por barra
-    bar_colors = [
-        semaforo_color(v) for v in vals
-    ]
+    vals        = [kpis[o]["pct"] for o in OBJS]
+    bar_colors  = [semaforo_color(v) for v in vals]
 
     fig = go.Figure()
-    # Barras de fondo (pista 100%)
+    # Pista de fondo
     fig.add_trace(go.Bar(
         x=[100]*len(OBJS), y=OBJS, orientation="h",
         marker=dict(color="#f1f5f9", line=dict(width=0)),
         showlegend=False, hoverinfo="skip",
     ))
-    # Barras de avance
+    # Barra de avance
     fig.add_trace(go.Bar(
         x=vals, y=OBJS, orientation="h",
         marker=dict(color=bar_colors, line=dict(width=0)),
         text=[f"  {v:.1f}%" for v in vals],
         textposition="outside",
-        textfont=dict(size=13, family="Inter, sans-serif", color="#334155"),
+        textfont=dict(size=13, color="#334155"),
         hovertemplate="%{y}: <b>%{x:.1f}%</b><extra></extra>",
         showlegend=False,
     ))
@@ -1707,15 +1791,48 @@ def chart_barras_objetivos(kpis: dict) -> go.Figure:
                   annotation_font=dict(size=10, color="#94a3b8"))
     fig.update_layout(
         barmode="overlay",
-        xaxis=dict(range=[0, 125], showgrid=False, ticksuffix="%",
+        xaxis=dict(range=[0, 130], showgrid=False, ticksuffix="%",
                    tickfont=dict(size=10, color="#8fa0b8"), zeroline=False),
         yaxis=dict(showgrid=False, tickfont=dict(size=13, color="#334155"), automargin=True),
         margin=dict(l=0, r=70, t=10, b=10),
         plot_bgcolor="white", paper_bgcolor="white",
-        height=300,
-        font=dict(family="Inter, sans-serif"),
+        height=300, font=dict(family="Inter, sans-serif"),
     )
     return fig
+
+
+def render_global_vision(skpis: dict):
+    """
+    SECCIÓN 2 — REQ 1: Barras ejecutivas a ancho completo (sin radar).
+    Panel derecho: resumen de semáforos por objetivo.
+    """
+    _sec_header("🎯", "Perfil de Cumplimiento por Objetivo")
+
+    col_chart, col_summary = st.columns([3, 1])
+    with col_chart:
+        st.markdown(
+            "<div style='font-size:12px;font-weight:600;color:#475569;margin-bottom:4px;'>"
+            "% cumplimiento actual vs meta 80% (línea punteada)</div>",
+            unsafe_allow_html=True,
+        )
+        st.plotly_chart(chart_barras_objetivos(skpis), use_container_width=True, key="ev_barras")
+
+    with col_summary:
+        objs = list(_OBJ_COLORS.keys())
+        for obj in objs:
+            pct   = skpis[obj]["pct"]
+            color = semaforo_color(pct)
+            icon  = "🟢" if pct > 80 else ("🟡" if pct >= 50 else "🔴")
+            short = obj.replace("de la Información","Info.").replace("Operativa","Op.")
+            st.markdown(
+                f"<div style='display:flex;align-items:center;justify-content:space-between;"
+                f"padding:6px 10px;margin-bottom:4px;background:white;border-radius:8px;"
+                f"border:1px solid #e2e8f0;'>"
+                f"<span style='font-size:10px;color:#475569;font-weight:600;'>{icon} {short}</span>"
+                f"<span style='font-size:12px;font-weight:800;color:{color};'>{pct:.0f}%</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
 
 
 def chart_reqs_por_categoria(df: pd.DataFrame) -> go.Figure:
@@ -1789,88 +1906,88 @@ _OBJ_COLORS = {
 }
 
 
-def _executive_kpi_card_html(obj: str, pct: float, color: str, data: dict) -> str:
-    """
-    REQ 2: Tarjeta ejecutiva completa para un objetivo estratégico.
-    Incluye: nombre, %, barra de progreso, semáforo, meta/avance.
-    Diseño optimizado para audiencias directivas — legible en < 5 segundos.
-    """
+def _kpi_card_top(obj: str, pct: float, color: str, data: dict) -> str:
+    """HTML de la parte superior de la tarjeta KPI."""
     bar_c = semaforo_color(pct)
     bar_w = min(int(pct), 100)
-    # Segmentos de la barra (10 bloques de 10%)
+    if pct > 80:
+        badge = f'<span style="background:#dcfce7;color:#15803d;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;">🟢 En meta</span>'
+    elif pct >= 50:
+        badge = f'<span style="background:#fef9c3;color:#a16207;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;">🟡 Seguimiento</span>'
+    else:
+        badge = f'<span style="background:#fee2e2;color:#b91c1c;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;">🔴 En riesgo</span>'
+
+    unit = data.get("unit", "")
+    meta = data.get("meta", "—")
+    avance = data.get("avance", 0)
+    meta_txt = f"Meta: {meta} {unit}  ·  Actual: {avance} {unit}" if not data.get("unit") == "%" else f"Meta: {meta}%  ·  Actual: {avance}%"
+
+    short_name = obj.replace("de la Información", "Info.").replace("Operativa", "Op.")
+
+    return f"""
+    <div style="background:white;border:1px solid #e2e8f0;border-top:3px solid {color};
+                border-radius:12px 12px 0 0;padding:14px 14px 10px;min-height:130px;
+                box-shadow:0 1px 4px rgba(0,0,0,.05);">
+      <div style="font-size:9px;font-weight:800;text-transform:uppercase;letter-spacing:1.2px;
+                  color:#94a3b8;margin-bottom:6px;line-height:1.3;">{short_name}</div>
+      <div style="font-size:2.2rem;font-weight:900;line-height:1;color:{color};
+                  margin-bottom:6px;">{pct:.1f}%</div>
+      <div style="background:#f1f5f9;border-radius:4px;height:4px;margin:0 0 8px;">
+        <div style="background:{bar_c};width:{bar_w}%;height:4px;border-radius:4px;"></div>
+      </div>
+      {badge}
+      <div style="font-size:10px;color:#94a3b8;margin-top:6px;">{meta_txt}</div>
+    </div>"""
+
+
+def _exec_kpi_card_html(obj: str, pct: float, color: str, data: dict) -> str:
+    """
+    REQ 4: Tarjeta ejecutiva completa — diseñada para lectura < 5 seg.
+    Barra segmentada en 10 bloques, badge semáforo, texto de progreso.
+    """
+    bar_c  = semaforo_color(pct)
+    bar_w  = min(int(pct), 100)
     filled = int(bar_w / 10)
-    bar_html = "".join(
-        f"<span style='display:inline-block;width:9%;height:8px;border-radius:3px;"
-        f"background:{bar_c};margin-right:1%;opacity:{0.9 if i < filled else 0.2};'></span>"
+    bar_blocks = "".join(
+        f"<span style='display:inline-block;width:9%;height:7px;border-radius:3px;"
+        f"background:{bar_c};margin-right:1%;opacity:{'0.9' if i < filled else '0.18'};'>"
+        f"</span>"
         for i in range(10)
     )
-
     if pct > 80:
-        badge_bg, badge_c, badge_txt = "#dcfce7", "#15803d", "🟢 En meta"
-        icon = "✅"
+        badge_bg, badge_c, badge_txt, icon = "#dcfce7","#15803d","🟢 En meta","✅"
     elif pct >= 50:
-        badge_bg, badge_c, badge_txt = "#fef9c3", "#a16207", "🟡 Seguimiento"
-        icon = "⚠️"
+        badge_bg, badge_c, badge_txt, icon = "#fef9c3","#a16207","🟡 Seguimiento","⚠️"
     else:
-        badge_bg, badge_c, badge_txt = "#fee2e2", "#b91c1c", "🔴 En riesgo"
-        icon = "🚨"
+        badge_bg, badge_c, badge_txt, icon = "#fee2e2","#b91c1c","🔴 En riesgo","🚨"
 
     unit   = data.get("unit", "")
     meta   = data.get("meta", "—")
     avance = data.get("avance", 0)
-    if unit == "%":
-        progress_txt = f"{avance}% alcanzado · Meta {meta}%"
-    else:
-        progress_txt = f"{avance} / {meta} {unit}"
+    prog   = f"{avance}% alcanzado · Meta {meta}%" if unit == "%" else f"{avance} / {meta} {unit}"
 
-    # Nombre corto para el encabezado de la tarjeta
-    short = (obj
-             .replace("de la Información", "Info.")
-             .replace("Operativa", "Op.")
-             .replace("Excelencia ", "")
-             .replace("Datos ", "")
-             .replace("Integración", "Integración"))
-
-    return f"""
-<div style="background:white;border:1px solid #e2e8f0;
+    return f"""<div style="background:white;border:1px solid #e2e8f0;
             border-top:4px solid {color};border-radius:14px;
-            padding:18px 16px 14px;box-shadow:0 2px 8px rgba(0,0,0,.06);
-            display:flex;flex-direction:column;gap:8px;min-height:200px;">
-
-  <!-- Encabezado: ícono semáforo + nombre -->
-  <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:4px;">
+            padding:16px 14px 13px;box-shadow:0 2px 8px rgba(0,0,0,.05);
+            display:flex;flex-direction:column;gap:7px;min-height:195px;">
+  <div style="display:flex;align-items:flex-start;justify-content:space-between;">
     <div style="font-size:9px;font-weight:800;text-transform:uppercase;
                 letter-spacing:1.1px;color:#94a3b8;line-height:1.4;flex:1;">{obj}</div>
-    <div style="font-size:14px;">{icon}</div>
+    <div style="font-size:13px;">{icon}</div>
   </div>
-
-  <!-- Porcentaje grande -->
-  <div style="font-size:2.6rem;font-weight:900;line-height:1;color:{color};">
-    {pct:.1f}%
-  </div>
-
-  <!-- Barra de progreso segmentada -->
-  <div style="display:flex;align-items:center;gap:0;width:100%;margin:2px 0;">
-    {bar_html}
-  </div>
-
-  <!-- Texto de progreso -->
-  <div style="font-size:11px;font-weight:600;color:#475569;">{progress_txt}</div>
-
-  <!-- Badge semáforo -->
+  <div style="font-size:2.5rem;font-weight:900;line-height:1;color:{color};">{pct:.1f}%</div>
+  <div style="display:flex;align-items:center;width:100%;gap:0;margin:1px 0;">{bar_blocks}</div>
+  <div style="font-size:11px;font-weight:600;color:#475569;">{prog}</div>
   <div style="margin-top:auto;">
-    <span style="display:inline-block;background:{badge_bg};color:{badge_c};
-                 font-size:10px;font-weight:700;padding:3px 10px;
-                 border-radius:20px;">{badge_txt}</span>
+    <span style="background:{badge_bg};color:{badge_c};font-size:10px;font-weight:700;
+                 padding:3px 10px;border-radius:20px;">{badge_txt}</span>
   </div>
 </div>"""
 
 
 def render_strategic_kpis(skpis: dict, objs_order: list, obj_colors: dict):
     """
-    SECCIÓN 1 — Tarjetas ejecutivas (REQ 2) + edición inline + botón guardar (REQ 3/4).
-    Todos los valores se guardan en _sd → persisten entre vistas.
-    Al presionar 'Guardar cambios' se escribe el JSON y se añade una fila al CSV histórico.
+    SECCIÓN 1 — Tarjetas ejecutivas (REQ 4) + edición en expander + guardado (REQ 2/5).
     """
     _sec_header("📊", "Cumplimiento por Objetivo Estratégico")
 
@@ -1878,156 +1995,108 @@ def render_strategic_kpis(skpis: dict, objs_order: list, obj_colors: dict):
     global_pct = skpis["_global"]
     g_icon     = "🟢 En meta" if global_pct > 80 else ("🟡 Seguimiento" if global_pct >= 50 else "🔴 En riesgo")
 
-    # ── Fila 1: 5 tarjetas ejecutivas (REQ 2) ─────────────────────────────
+    # ── Fila 1: 5 tarjetas ejecutivas ────────────────────────────────────────
     card_cols = st.columns(5)
     for i, obj in enumerate(objs_order):
-        color = obj_colors[obj]
-        pct   = skpis[obj]["pct"]
-        data  = skpis[obj]
         with card_cols[i]:
-            st.markdown(_executive_kpi_card_html(obj, pct, color, data),
-                        unsafe_allow_html=True)
+            st.markdown(
+                _exec_kpi_card_html(obj, skpis[obj]["pct"], obj_colors[obj], skpis[obj]),
+                unsafe_allow_html=True,
+            )
 
-    # ── KPI Global debajo de las tarjetas ─────────────────────────────────
+    # ── Banner de cumplimiento global ─────────────────────────────────────────
+    g_color = semaforo_color(global_pct)
+    en_meta   = sum(1 for o in objs_order if skpis[o]["pct"] > 80)
+    seguim    = sum(1 for o in objs_order if 50 <= skpis[o]["pct"] <= 80)
+    en_riesgo = sum(1 for o in objs_order if skpis[o]["pct"] < 50)
     st.markdown(
         f"<div style='background:linear-gradient(135deg,#1d6af5 0%,#0891b2 100%);"
         f"border-radius:12px;padding:14px 24px;margin:14px 0 6px;"
         f"display:flex;align-items:center;justify-content:space-between;"
         f"box-shadow:0 4px 16px rgba(29,106,245,.22);'>"
-        f"<div style='display:flex;align-items:center;gap:16px;'>"
         f"<div>"
         f"<div style='font-size:8px;font-weight:800;text-transform:uppercase;"
-        f"letter-spacing:1.2px;color:rgba(255,255,255,.65);'>Cumplimiento Estratégico Global · 5 Objetivos · TD 2026</div>"
-        f"<div style='font-size:2rem;font-weight:900;color:white;line-height:1.1;'>{global_pct:.1f}%</div>"
-        f"</div></div>"
+        f"letter-spacing:1.2px;color:rgba(255,255,255,.65);'>"
+        f"Cumplimiento Estratégico Global · 5 Objetivos · TD 2026</div>"
+        f"<div style='font-size:2rem;font-weight:900;color:white;line-height:1.1;'>"
+        f"{global_pct:.1f}%</div></div>"
+        f"<div style='display:flex;gap:18px;align-items:center;'>"
+        f"<div style='text-align:center;'>"
+        f"<div style='font-size:1.4rem;font-weight:900;color:#4ade80;'>{en_meta}</div>"
+        f"<div style='font-size:8px;color:rgba(255,255,255,.55);'>En meta</div></div>"
+        f"<div style='text-align:center;'>"
+        f"<div style='font-size:1.4rem;font-weight:900;color:#fde047;'>{seguim}</div>"
+        f"<div style='font-size:8px;color:rgba(255,255,255,.55);'>Seguim.</div></div>"
+        f"<div style='text-align:center;'>"
+        f"<div style='font-size:1.4rem;font-weight:900;color:#f87171;'>{en_riesgo}</div>"
+        f"<div style='font-size:8px;color:rgba(255,255,255,.55);'>Riesgo</div></div>"
         f"<div style='background:rgba(255,255,255,.18);color:white;font-size:11px;"
         f"font-weight:700;padding:5px 16px;border-radius:20px;'>{g_icon}</div>"
-        f"</div>",
+        f"</div></div>",
         unsafe_allow_html=True,
     )
 
-    st.markdown("<div style='margin-top:.6rem'></div>", unsafe_allow_html=True)
-
-    # ── Fila 2: Paneles de edición por objetivo ────────────────────────────
+    # ── Edición de metas y avances (expander — REQ 5: no interrumpe el flujo) ─
     with st.expander("✏️ Editar metas y avances", expanded=False):
         st.markdown(
             "<div style='font-size:12px;color:#64748b;margin-bottom:10px;'>"
             "Ajusta los valores de cada objetivo. Presiona <b>💾 Guardar cambios</b> "
-            "para persistir en disco y registrar el histórico.</div>",
+            "para persistirlos en disco entre sesiones.</div>",
             unsafe_allow_html=True,
         )
         edit_cols = st.columns(5)
         for i, obj in enumerate(objs_order):
             meta_k, comp_k, comp_lbl, max_m, max_c, is_pct = _OBJ_CFG[obj]
             color = obj_colors[obj]
-
             with edit_cols[i]:
                 st.markdown(
                     f"<div style='font-size:9px;font-weight:800;text-transform:uppercase;"
-                    f"letter-spacing:1px;color:{color};margin-bottom:6px;border-bottom:"
-                    f"2px solid {color};padding-bottom:4px;'>{obj.split()[0]} {obj.split()[1] if len(obj.split())>1 else ''}</div>",
+                    f"letter-spacing:1px;color:{color};border-bottom:2px solid {color};"
+                    f"padding-bottom:4px;margin-bottom:8px;'>{obj.split()[0]} {obj.split()[1] if len(obj.split())>1 else ''}</div>",
                     unsafe_allow_html=True,
                 )
-                lbl_m = "Meta %" if is_pct else "Meta"
-                lbl_c = "Actual %" if is_pct else comp_lbl
                 v_meta = st.number_input(
-                    lbl_m, min_value=1, max_value=max_m,
+                    "Meta %" if is_pct else "Meta",
+                    min_value=1, max_value=max_m,
                     value=int(sd.get(meta_k, 1)),
                     step=1, key=f"w_{meta_k}",
-                    label_visibility="visible",
                 )
                 sd[meta_k] = v_meta
 
                 v_comp = st.number_input(
-                    lbl_c, min_value=0, max_value=max_c,
+                    "Actual %" if is_pct else comp_lbl,
+                    min_value=0, max_value=max_c,
                     value=int(sd.get(comp_k, 0)),
                     step=1, key=f"w_{comp_k}",
-                    label_visibility="visible",
                 )
                 sd[comp_k] = v_comp
 
-        # ── REQ 3 + 4: Botón de guardado con feedback ─────────────────────
+        # ── Botón guardar + feedback ─────────────────────────────────────────
         st.markdown("<div style='margin-top:10px'></div>", unsafe_allow_html=True)
-        col_save, col_msg = st.columns([1, 3])
+        col_save, col_msg = st.columns([1, 4])
         with col_save:
             if st.button("💾 Guardar cambios", key="btn_save_kpis",
                          type="primary", use_container_width=True):
                 ok_json = save_kpis_to_json(sd)
-                ok_hist = append_history_row(sd)
+                ok_hist = append_kpi_history(sd)
+                ts = datetime.today().strftime('%d/%m/%Y %H:%M')
                 if ok_json:
                     st.session_state["_kpi_save_msg"] = (
-                        "success",
-                        f"✅ Guardado en **data/strategic_kpis.json** · "
-                        f"{datetime.today().strftime('%d/%m/%Y %H:%M')}",
+                        "ok",
+                        f"✅ Guardado en **data/strategic_kpis.json** · {ts}",
                     )
                 else:
                     st.session_state["_kpi_save_msg"] = (
-                        "warning",
-                        "⚠️ No se pudo escribir en disco (entorno de solo lectura). "
-                        "Los datos persisten en memoria durante la sesión.",
+                        "warn",
+                        "⚠️ El entorno no permite escritura. Los datos persisten en memoria.",
                     )
         with col_msg:
             msg = st.session_state.get("_kpi_save_msg")
             if msg:
-                lvl, txt = msg
-                if lvl == "success":
-                    st.success(txt)
+                if msg[0] == "ok":
+                    st.success(msg[1])
                 else:
-                    st.warning(txt)
-
-
-def render_global_vision(skpis: dict):
-    """
-    SECCIÓN 2 — Gráfico de barras ejecutivo a ancho completo.
-    REQ 1: El radar estratégico fue eliminado. Esta sección muestra únicamente
-    el gráfico de barras de cumplimiento que es más claro para gerencia.
-    """
-    _sec_header("🎯", "Perfil de Cumplimiento por Objetivo Estratégico")
-
-    col_chart, col_global = st.columns([3, 1])
-    with col_chart:
-        st.markdown(
-            "<div style='font-size:12px;font-weight:600;color:#475569;margin-bottom:4px;'>"
-            "% de cumplimiento vs meta (línea punteada = meta 80%)</div>",
-            unsafe_allow_html=True,
-        )
-        st.plotly_chart(chart_barras_objetivos(skpis), use_container_width=True, key="ev_barras")
-
-    with col_global:
-        global_pct = skpis["_global"]
-        g_color    = semaforo_color(global_pct)
-        g_icon     = "🟢 En meta" if global_pct > 80 else ("🟡 Seguimiento" if global_pct >= 50 else "🔴 En riesgo")
-        # Mini resumen de semáforos
-        objs = ["Eficiencia Operativa","Datos Confiables","Excelencia ERP",
-                "Integración","Seguridad de la Información"]
-        en_meta    = sum(1 for o in objs if skpis[o]["pct"] > 80)
-        seguim     = sum(1 for o in objs if 50 <= skpis[o]["pct"] <= 80)
-        en_riesgo  = sum(1 for o in objs if skpis[o]["pct"] < 50)
-        st.markdown(
-            f"<div style='background:linear-gradient(160deg,#1d6af5 0%,#0891b2 100%);"
-            f"border-radius:12px;padding:18px 14px;text-align:center;"
-            f"box-shadow:0 4px 18px rgba(29,106,245,.28);'>"
-            f"<div style='font-size:9px;font-weight:800;color:rgba(255,255,255,.7);"
-            f"text-transform:uppercase;letter-spacing:1.2px;margin-bottom:8px;'>"
-            f"Cumplimiento Global</div>"
-            f"<div style='font-size:2.8rem;font-weight:900;color:white;line-height:1;"
-            f"margin-bottom:8px;'>{global_pct:.1f}%</div>"
-            f"<div style='background:rgba(255,255,255,.2);color:white;font-size:10px;"
-            f"font-weight:700;padding:3px 10px;border-radius:20px;margin-bottom:12px;'>"
-            f"{g_icon}</div>"
-            f"<div style='display:flex;justify-content:space-around;margin-top:8px;'>"
-            f"<div style='text-align:center;'>"
-            f"<div style='font-size:1.4rem;font-weight:900;color:#4ade80;'>{en_meta}</div>"
-            f"<div style='font-size:8px;color:rgba(255,255,255,.6);'>En meta</div></div>"
-            f"<div style='text-align:center;'>"
-            f"<div style='font-size:1.4rem;font-weight:900;color:#fde047;'>{seguim}</div>"
-            f"<div style='font-size:8px;color:rgba(255,255,255,.6);'>Seguim.</div></div>"
-            f"<div style='text-align:center;'>"
-            f"<div style='font-size:1.4rem;font-weight:900;color:#f87171;'>{en_riesgo}</div>"
-            f"<div style='font-size:8px;color:rgba(255,255,255,.6);'>Riesgo</div></div>"
-            f"</div></div>",
-            unsafe_allow_html=True,
-        )
+                    st.warning(msg[1])
 
 
 def _safe_date_df(df: pd.DataFrame, date_cols: list) -> pd.DataFrame:
@@ -2040,254 +2109,186 @@ def _safe_date_df(df: pd.DataFrame, date_cols: list) -> pd.DataFrame:
     return df
 
 
-def render_strategic_configuration():
+def render_tabla_entregables():
     """
-    SECCIÓN 3 — Hitos estratégicos + Tabla de Entregables editables.
-    Fix DateColumn: fechas convertidas a date.date antes de pasar al editor.
+    PRINCIPALES ENTREGABLES ESTRATÉGICOS
+    ─────────────────────────────────────
+    Tabla editable con persistencia JSON/CSV.
+    Columnas: Entregable · Responsable · Objetivo Estratégico · Fecha Compromiso · Estado
+
+    · Agrega filas con el botón "+" nativo de st.data_editor
+    · Edita directamente en la tabla
+    · Elimina filas seleccionando la checkbox y usando Delete
+    · Guarda con el botón "💾 Guardar cambios"
+    · Exporta a CSV
     """
     sd = st.session_state["_sd"]
 
-    OBJS_OPTS = [
+    OBJS_OPTS   = [
         "Eficiencia Operativa", "Datos Confiables", "Excelencia ERP",
         "Integración", "Seguridad de la Información",
     ]
-    PRIORIDAD_OPTS = ["Alta", "Media", "Baja"]
-    ESTADO_OPTS    = ["Pendiente", "En curso", "Completado", "Bloqueado"]
+    ESTADO_OPTS = ["En curso", "Completado", "Pendiente", "Bloqueado", "Cancelado"]
 
-    # ══ TAB 1: Hitos estratégicos ══════════════════════════════════════════
-    tab_hitos, tab_entregables = st.tabs([
-        "📍 Hitos Estratégicos",
-        "📦 Entregables por Objetivo",
-    ])
+    # ── Encabezado de sección ─────────────────────────────────────────────
+    _sec_header("🏆", "Principales Entregables Estratégicos")
+    st.markdown(
+        "<div style='font-size:13px;color:#64748b;margin:-4px 0 14px;'>"
+        "Lista editable de los entregables estratégicos del equipo. "
+        "Agrega · edita · elimina filas directamente. "
+        "Presiona <strong>💾 Guardar cambios</strong> para persistir entre sesiones.</div>",
+        unsafe_allow_html=True,
+    )
 
-    # ─── Hitos ─────────────────────────────────────────────────────────────
-    with tab_hitos:
-        st.markdown(
-            "<div style='font-size:12px;color:#64748b;margin:6px 0 10px;'>"
-            "Registra y actualiza los hitos clave de cada objetivo. "
-            "Usa <b>+ Agregar fila</b> para nuevos hitos.</div>",
-            unsafe_allow_html=True,
-        )
+    # ── Cargar datos desde _sd ────────────────────────────────────────────
+    raw = sd.get("entregables_estrategicos", pd.DataFrame(columns=_ENT_COLS))
+    if not isinstance(raw, pd.DataFrame):
+        raw = pd.DataFrame(columns=_ENT_COLS)
 
-        # FIX ERROR: convertir Fecha (string) → date.date antes del editor
-        hitos_raw = sd.get("hitos_tabla", pd.DataFrame({
-            "Objetivo Estratégico": [], "Hito": [], "Fecha": [],
-            "Responsable": [], "Estado (%)": [], "Comentario": [],
-        }))
-        hitos_df = _safe_date_df(hitos_raw, ["Fecha"])
+    ent_df = raw.copy()
+    for col in _ENT_COLS:
+        if col not in ent_df.columns:
+            ent_df[col] = "" if col != "Fecha Compromiso" else None
+    ent_df = ent_df[_ENT_COLS]
 
-        edited_h = st.data_editor(
-            hitos_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "Objetivo Estratégico": st.column_config.SelectboxColumn(
-                    "Objetivo", options=OBJS_OPTS, width="medium", required=True),
-                "Hito":        st.column_config.TextColumn("Hito / Entregable", width="large"),
-                "Fecha":       st.column_config.DateColumn("Fecha límite"),
-                "Responsable": st.column_config.TextColumn("Responsable", width="medium"),
-                "Estado (%)":  st.column_config.NumberColumn(
-                    "Estado %", min_value=0, max_value=100, step=5, format="%d%%"),
-                "Comentario":  st.column_config.TextColumn("Comentario", width="medium"),
-            },
-            key="w_hitos_editor",
-            height=280,
-        )
-        sd["hitos_tabla"] = edited_h
+    # Rellenar columnas de texto con "" y dejar Fecha Compromiso como date/None
+    text_cols = [c for c in _ENT_COLS if c != "Fecha Compromiso"]
+    ent_df[text_cols] = ent_df[text_cols].fillna("").astype(str)
 
-        # Resumen por objetivo
-        if len(edited_h) > 0:
-            st.markdown("<br>", unsafe_allow_html=True)
-            resumen = (
-                edited_h.groupby("Objetivo Estratégico")["Estado (%)"]
-                .mean().round(1).reset_index()
-                .rename(columns={"Estado (%)": "Avance Promedio %"})
-                .sort_values("Avance Promedio %", ascending=False)
-                .reset_index(drop=True)
-            )
-            resumen["Estado"] = resumen["Avance Promedio %"].apply(
-                lambda v: "🟢 En meta" if v > 80 else ("🟡 Seguimiento" if v >= 50 else "🔴 En riesgo")
-            )
-            st.dataframe(
-                resumen, use_container_width=True, hide_index=True, height=200,
-                column_config={
-                    "Objetivo Estratégico": st.column_config.TextColumn("Objetivo", width="large"),
-                    "Avance Promedio %": st.column_config.ProgressColumn(
-                        "Avance Promedio", min_value=0, max_value=100, format="%.1f%%"),
-                    "Estado": st.column_config.TextColumn("Estado", width="small"),
-                },
-            )
-
-    # ─── Entregables ────────────────────────────────────────────────────────
-    with tab_entregables:
-        st.markdown(
-            "<div style='font-size:12px;color:#64748b;margin:6px 0 10px;'>"
-            "Gestiona los principales entregables de cada objetivo estratégico. "
-            "Edita en línea · Usa <b>+ Agregar fila</b> para nuevos entregables.</div>",
-            unsafe_allow_html=True,
-        )
-
-        # FIX: convertir Fecha Límite → date.date
-        entregables_raw = sd.get("entregables_tabla", pd.DataFrame({
-            "Objetivo": [], "Entregable": [], "Responsable": [],
-            "Fecha Límite": [], "Prioridad": [], "Estado": [], "% Avance": [],
-        }))
-        entregables_df = _safe_date_df(entregables_raw, ["Fecha Límite"])
-
-        edited_e = st.data_editor(
-            entregables_df,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "Objetivo": st.column_config.SelectboxColumn(
-                    "Objetivo Estratégico", options=OBJS_OPTS, width="medium", required=True),
-                "Entregable":   st.column_config.TextColumn("Entregable", width="large"),
-                "Responsable":  st.column_config.TextColumn("Responsable", width="medium"),
-                "Fecha Límite": st.column_config.DateColumn("Fecha límite"),
-                "Prioridad":    st.column_config.SelectboxColumn(
-                    "Prioridad", options=PRIORIDAD_OPTS, width="small"),
-                "Estado":       st.column_config.SelectboxColumn(
-                    "Estado", options=ESTADO_OPTS, width="medium"),
-                "% Avance":     st.column_config.NumberColumn(
-                    "% Avance", min_value=0, max_value=100, step=5, format="%d%%"),
-            },
-            key="w_entregables_editor",
-            height=340,
-        )
-        sd["entregables_tabla"] = edited_e
-
-        # Mini dashboard de entregables
-        if len(edited_e) > 0:
-            st.markdown("<br>", unsafe_allow_html=True)
-            ca, cb, cc, cd = st.columns(4)
-            total_e     = len(edited_e)
-            completados = (edited_e["Estado"] == "Completado").sum()
-            en_curso    = (edited_e["Estado"] == "En curso").sum()
-            alta_prio   = (edited_e.get("Prioridad","") == "Alta").sum() if "Prioridad" in edited_e.columns else 0
-            ca.metric("Total entregables", total_e)
-            cb.metric("✅ Completados", completados, f"{round(completados/max(total_e,1)*100,0):.0f}%")
-            cc.metric("🔄 En curso", en_curso)
-            cd.metric("🔴 Alta prioridad", alta_prio)
-
-
-def _render_kpi_history():
-    """
-    REQ 4: Muestra el histórico de cambios de los indicadores estratégicos.
-    Lee data/strategic_history.csv y lo presenta como tabla interactiva
-    con gráfico de tendencia por objetivo.
-    """
-    hist_df = load_history_df()
-    if hist_df.empty:
-        return  # Sin historial aún → no mostrar la sección
-
-    _sec_header("📋", "Histórico de Cambios en Indicadores Estratégicos")
-
-    with st.expander(f"Ver histórico ({len(hist_df)} registros)", expanded=False):
-        # Filtro por objetivo
-        objs_disp = ["Todos"] + sorted(hist_df["objetivo"].unique().tolist())
-        col_f, _ = st.columns([1, 3])
-        with col_f:
-            obj_filtro = st.selectbox(
-                "Filtrar por objetivo", options=objs_disp, key="w_hist_filtro"
-            )
-
-        df_show = hist_df.copy()
-        if obj_filtro != "Todos":
-            df_show = df_show[df_show["objetivo"] == obj_filtro]
-
-        df_show = df_show.sort_values("fecha", ascending=False).reset_index(drop=True)
-        df_show["% cumpl."] = (df_show["avance"] / df_show["meta"].clip(lower=1) * 100).round(1).astype(str) + "%"
-
-        # Formatear fecha para visualización
+    # Convertir "Fecha Compromiso" a datetime.date — None para vacíos
+    # Convierte strings vacíos ("") y NaN a None correctamente
+    def _to_date(val):
+        if val is None or (isinstance(val, float) and np.isnan(val)):
+            return None
+        if isinstance(val, str) and val.strip() == "":
+            return None
         try:
-            df_show["fecha"] = pd.to_datetime(df_show["fecha"]).dt.strftime("%d/%m/%Y %H:%M")
+            return pd.to_datetime(val, dayfirst=True, errors="coerce").date()
         except Exception:
-            pass
+            return None
 
-        st.dataframe(
-            df_show[["fecha","objetivo","meta","avance","% cumpl."]].rename(columns={
-                "fecha": "Fecha", "objetivo": "Objetivo", "meta": "Meta",
-                "avance": "Avance", "% cumpl.": "% Cumpl.",
-            }),
-            use_container_width=True,
-            hide_index=True,
-            height=min(60 + 48 * len(df_show), 400),
-        )
+    ent_df["Fecha Compromiso"] = ent_df["Fecha Compromiso"].apply(_to_date)
 
-        # Descargar histórico como CSV
-        csv_bytes = hist_df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "⬇ Descargar histórico (CSV)",
-            data=csv_bytes,
-            file_name=f"strategic_history_{datetime.today().strftime('%Y%m%d')}.csv",
-            mime="text/csv",
-            key="dl_history_csv",
-        )
+    # ── Editor principal ──────────────────────────────────────────────────
+    edited = st.data_editor(
+        ent_df,
+        num_rows="dynamic",
+        use_container_width=True,
+        height=400,
+        column_config={
+            "Entregable": st.column_config.TextColumn(
+                "📋 Entregable",
+                width="large",
+                help="Nombre del entregable o requerimiento estratégico",
+                required=True,
+            ),
+            "Responsable": st.column_config.TextColumn(
+                "👤 Responsable",
+                width="medium",
+                help="Nombre del responsable del entregable",
+            ),
+            "Objetivo Estratégico": st.column_config.SelectboxColumn(
+                "🏆 Objetivo Estratégico",
+                options=OBJS_OPTS,
+                width="medium",
+                required=True,
+            ),
+            "Fecha Compromiso": st.column_config.DateColumn(
+                "📅 Fecha Compromiso",
+                format="DD/MM/YYYY",
+                width="small",
+                help="Fecha límite de entrega comprometida",
+            ),
+            "Estado": st.column_config.SelectboxColumn(
+                "🚦 Estado",
+                options=ESTADO_OPTS,
+                width="small",
+                required=True,
+            ),
+        },
+        key="w_ent_estrategicos",
+    )
 
-        # Gráfico de tendencia de % cumplimiento por objetivo
-        if len(hist_df) >= 2:
-            st.markdown(
-                "<div style='font-size:12px;font-weight:600;color:#334155;margin:10px 0 4px;'>"
-                "Tendencia de cumplimiento por objetivo</div>",
-                unsafe_allow_html=True,
+    # Persistir en _sd inmediatamente (memoria de sesión)
+    sd["entregables_estrategicos"] = edited
+
+    # ── Botones guardar + exportar ────────────────────────────────────────
+    col_save, col_dl, col_msg = st.columns([1, 1, 4])
+    with col_save:
+        if st.button("💾 Guardar cambios", key="btn_save_ent",
+                     type="primary", use_container_width=True):
+            ok = save_entregables_csv(edited)
+            ts = datetime.today().strftime('%d/%m/%Y %H:%M')
+            st.session_state["_ent_save_msg"] = (
+                "ok" if ok else "warn",
+                f"✅ Guardado en **data/entregables_estrategicos.csv** · {ts}"
+                if ok else
+                "⚠️ No se pudo escribir en disco. Datos activos en memoria.",
             )
-            trend_df = hist_df.copy()
-            trend_df["pct"] = (trend_df["avance"] / trend_df["meta"].clip(lower=1) * 100).round(1)
-            try:
-                trend_df["fecha"] = pd.to_datetime(trend_df["fecha"])
-            except Exception:
-                pass
 
-            fig_trend = go.Figure()
-            obj_color_map = {
-                "Eficiencia Operativa":        COLORS["green"],
-                "Datos Confiables":            COLORS["purple"],
-                "Excelencia ERP":              COLORS["primary"],
-                "Integración":                 COLORS["cyan"],
-                "Seguridad de la Información": COLORS["red"],
-            }
-            for obj in trend_df["objetivo"].unique():
-                sub = trend_df[trend_df["objetivo"] == obj].sort_values("fecha")
-                fig_trend.add_trace(go.Scatter(
-                    x=sub["fecha"], y=sub["pct"],
-                    mode="lines+markers",
-                    name=obj,
-                    line=dict(color=obj_color_map.get(obj, "#94a3b8"), width=2),
-                    marker=dict(size=6),
-                    hovertemplate=f"<b>{obj}</b><br>%{{x}}<br>%{{y:.1f}}%<extra></extra>",
-                ))
-            fig_trend.add_hline(y=80, line_dash="dot", line_color="#94a3b8",
-                                annotation_text="Meta 80%",
-                                annotation_font=dict(size=9, color="#94a3b8"))
-            fig_trend.update_layout(
-                xaxis=dict(title=None, tickfont=dict(size=10)),
-                yaxis=dict(title=None, ticksuffix="%", range=[0, 110],
-                           showgrid=True, gridcolor="#f1f5f9"),
-                legend=dict(orientation="h", y=-0.2, x=0.5, xanchor="center",
-                            font=dict(size=10)),
-                plot_bgcolor="white", paper_bgcolor="white",
-                margin=dict(l=10, r=20, t=10, b=50),
-                height=280,
-                font=dict(family="Inter, sans-serif", size=11),
+    with col_dl:
+        if not edited.empty:
+            csv_bytes = edited.to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "⬇ Exportar CSV",
+                data=csv_bytes,
+                file_name=f"entregables_estrategicos_{datetime.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="dl_ent_csv",
+                use_container_width=True,
             )
-            st.plotly_chart(fig_trend, use_container_width=True, key="hist_trend_chart")
+
+    with col_msg:
+        msg = st.session_state.get("_ent_save_msg")
+        if msg:
+            if msg[0] == "ok":
+                st.success(msg[1])
+            else:
+                st.warning(msg[1])
+
+    # ── Mini-dashboard de entregables ─────────────────────────────────────
+    if not edited.empty and "Estado" in edited.columns:
+        st.markdown("<br>", unsafe_allow_html=True)
+        total_e     = len(edited)
+        completados = (edited["Estado"] == "Completado").sum()
+        en_curso    = (edited["Estado"] == "En curso").sum()
+        pendientes  = (edited["Estado"] == "Pendiente").sum()
+        bloqueados  = (edited["Estado"] == "Bloqueado").sum()
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("📋 Total entregables", total_e)
+        c2.metric("✅ Completados", int(completados),
+                  f"{round(completados/max(total_e,1)*100,0):.0f}%")
+        c3.metric("🔄 En curso", int(en_curso))
+        c4.metric("⏳ Pendientes", int(pendientes))
+        c5.metric("🚨 Bloqueados", int(bloqueados), delta_color="inverse")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 16. VISTA ESTRATÉGICA — ORQUESTADOR
+# 16. VISTA ESTRATÉGICA — ORQUESTADOR (REQ 4: storytelling ejecutivo)
 # ─────────────────────────────────────────────────────────────────────────────
 def create_executive_view(df: pd.DataFrame):
-    """Vista Indicadores Estratégicos — Vicepresidencia TD 2026."""
+    """
+    Vista Indicadores Estratégicos — REQ 4: Storytelling ejecutivo.
 
-    # ── Header ─────────────────────────────────────────────────────────────
+    Flujo de lectura ejecutivo (< 10 segundos por sección):
+    ═══════════════════════════════════════════════════════
+    1️⃣  ESTADO DEL PORTAFOLIO → métricas del Excel (si hay datos)
+    2️⃣  AVANCE ESTRATÉGICO   → 5 tarjetas KPI + global
+    3️⃣  PERFIL DE CUMPLIMIENTO → gráfico de barras ejecutivo
+    4️⃣  IMPACTO GENERADO     → tabla de entregables del equipo
+    5️⃣  EXPORTAR             → PDF del informe
+    """
+    sd = st.session_state["_sd"]
+
+    # ── Header ejecutivo ──────────────────────────────────────────────────
     col_h1, col_h2 = st.columns([3, 1])
     with col_h1:
         st.markdown(
             "<h2 style='color:#0f1c2e;font-weight:900;margin-bottom:2px;font-size:1.8rem;'>"
-            "🔵 Indicadores Estratégicos — Vicepresidencia</h2>"
+            "🔵 Indicadores Estratégicos — Vicepresidencia TD</h2>"
             f"<p style='color:#64748b;font-size:13px;margin-top:0;'>"
-            f"Panel editable de metas y avances · TD 2026 · "
-            f"Actualizado: {datetime.today().strftime('%d/%m/%Y')}</p>",
+            f"Panel ejecutivo · TD 2026 · "
+            f"Actualizado: {datetime.today().strftime('%d/%m/%Y %H:%M')}</p>",
             unsafe_allow_html=True,
         )
     with col_h2:
@@ -2296,37 +2297,36 @@ def create_executive_view(df: pd.DataFrame):
                 f"<div style='text-align:right;padding-top:18px;'>"
                 f"<span style='background:#eff6ff;color:#1d6af5;font-size:12px;"
                 f"font-weight:700;padding:6px 14px;border-radius:20px;'>"
-                f"📂 {len(df)} reqs. del Excel</span></div>",
+                f"📂 {len(df)} reqs. cargados</span></div>",
                 unsafe_allow_html=True,
             )
-
-    # ── Calcular KPIs ──────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # 1️⃣ AVANCE ESTRATÉGICO — 5 tarjetas KPI
+    # ─────────────────────────────────────────────────────────────────────
     skpis = calculate_strategic_kpis()
-
-    # ══ SECCIÓN 1 — KPIs + edición inline ════════════════════════════════
+    _sec_header("2️⃣", "Avance Estratégico — Cumplimiento por Objetivo")
     render_strategic_kpis(skpis, _OBJS_ORDER, _OBJ_COLORS)
 
     # Recalcular tras edición del ciclo actual
     skpis = calculate_strategic_kpis()
-
-    # ══ SECCIÓN 2 — Radar + Barras ════════════════════════════════════════
-    render_global_vision(skpis)
-
-    # ══ SECCIÓN 3 — Hitos ═════════════════════════════════════════════════
-    render_strategic_configuration()
-
-    # ══ Indicadores de portafolio (si hay Excel) ══════════════════════════
+    # ─────────────────────────────────────────────────────────────────────
+    # 2️⃣  ESTADO DEL PORTAFOLIO (solo si hay Excel)
+    # ─────────────────────────────────────────────────────────────────────
     if not df.empty:
-        _sec_header("📂", "Indicadores de Portafolio — Datos del Excel")
+        _sec_header("1️⃣", "Estado del Portafolio — Datos del Excel")
+
         total = len(df)
         comp  = (df["progreso"] == "Completado").sum()
+        enc   = (df["progreso"] == "En curso").sum()
+        ret   = df["retraso"].sum() if "retraso" in df.columns else 0
         sin_a = (df["asignado_raw"] == "Sin asignar").sum()
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Total Requerimientos", total)
-        c2.metric("Categorías estratégicas", df["categoria"].nunique())
-        c3.metric("Completados", comp, f"{round(comp/total*100,1)}% del total")
-        c4.metric("Sin asignar", sin_a, delta_color="inverse")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("📋 Total requerimientos", total)
+        c2.metric("✅ Completados", int(comp), f"{round(comp/total*100,1)}%")
+        c3.metric("🔄 En curso", int(enc))
+        c4.metric("⚠️ Con retraso", int(ret), delta_color="inverse")
+        c5.metric("👤 Sin asignar", int(sin_a), delta_color="inverse")
 
         st.markdown("<br>", unsafe_allow_html=True)
         col_rcat, col_rarea = st.columns([1, 1.6])
@@ -2334,25 +2334,37 @@ def create_executive_view(df: pd.DataFrame):
             st.markdown(
                 "<div style='font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;'>"
                 "Reqs. por Categoría Estratégica</div>", unsafe_allow_html=True)
-            st.plotly_chart(chart_reqs_por_categoria(df), use_container_width=True, key="ev_cat")
+            st.plotly_chart(chart_reqs_por_categoria(df),
+                            use_container_width=True, key="ev_cat")
         with col_rarea:
             st.markdown(
                 "<div style='font-size:12px;font-weight:600;color:#334155;margin-bottom:4px;'>"
                 "Reqs. por Área de Negocio</div>", unsafe_allow_html=True)
-            st.plotly_chart(chart_reqs_por_area(df), use_container_width=True, key="ev_area")
+            st.plotly_chart(chart_reqs_por_area(df),
+                            use_container_width=True, key="ev_area")
 
-    # ── Botón de informe PDF ─────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # 3️⃣  PERFIL DE CUMPLIMIENTO — gráfico ejecutivo
+    # ─────────────────────────────────────────────────────────────────────
+    render_global_vision(skpis)
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 4️⃣  IMPACTO GENERADO — tabla de entregables del equipo
+    # ─────────────────────────────────────────────────────────────────────
+    render_tabla_entregables()
+
+    # ─────────────────────────────────────────────────────────────────────
+    # 5️⃣  EXPORTAR INFORME
+    # ─────────────────────────────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)
-
-    # REQ 4: Histórico de cambios
-    _render_kpi_history()
-
-    _sec_header("📄", "Exportar Informe")
+    _sec_header("5️⃣", "Exportar Informe Ejecutivo")
     skpis_for_pdf = calculate_strategic_kpis()
     render_pdf_download_button(skpis_for_pdf, df, key_suffix="strategic")
 
-    st.caption("Vista Estratégica TD 2026 · Vicepresidencia Transformación Digital · "
-               "Metas editables en tiempo real")
+    st.caption(
+        "Vista Estratégica TD 2026 · Vicepresidencia Transformación Digital · "
+        "Metas editables · Datos persistidos en disco"
+    )
 
 # prueba deploy
 
@@ -3543,45 +3555,25 @@ def main():
                 unsafe_allow_html=True,
             )
 
-            # Subir nuevo archivo con mes asociado
-            with st.expander("➕ Agregar reporte mensual", expanded=len(sd["historial_reportes"]) == 0):
-                col_yr, col_mn = st.columns(2)
-                with col_yr:
-                    año_sel = st.number_input("Año", min_value=2020, max_value=2030,
-                                              value=2026, step=1, key="w_año_upload")
-                with col_mn:
-                    mes_num = st.selectbox(
-                        "Mes", options=list(MES_NOMBRES.keys()),
-                        format_func=lambda m: MES_NOMBRES[m],
-                        key="w_mes_upload",
-                    )
-                mes_key = f"{año_sel}-{mes_num}"
-                uploaded = st.file_uploader(
-                    f"Excel — {MES_NOMBRES[mes_num]} {año_sel}",
-                    type=["xlsx", "xls"], key="w_file_uploader",
-                    help="Exporta desde Microsoft Planner → Exportar a Excel",
-                )
-                if uploaded is not None:
-                    if st.button(f"💾 Guardar {MES_NOMBRES[mes_num]} {año_sel}",
-                                 key="btn_guardar_mes", use_container_width=True):
-                        with st.spinner("⚙ Procesando..."):
-                            raw = load_data(uploaded)
-                            if not raw.empty:
-                                df_mes, meta_mes = preprocess_data(raw)
-                                sd["historial_reportes"][mes_key] = df_mes
-                                sd["historial_meta"][mes_key] = meta_mes
-                                sd["mes_activo"] = mes_key
-                                st.success(f"✅ {MES_NOMBRES[mes_num]} {año_sel} guardado")
-                                st.rerun()
-                            else:
-                                st.error("El archivo está vacío o no pudo leerse.")
-
-            # ── Selector de mes activo ──────────────────────────────────────
+            # ── Lista de archivos cargados (carga automática desde disco) ──────
             hist = sd["historial_reportes"]
+            disk_exports = scan_planner_exports()
+
             if hist:
                 st.markdown(
-                    "<div style='font-size:12px;font-weight:700;color:#0f1c2e;"
-                    "margin:8px 0 4px;'>📅 Mes activo</div>",
+                    f"<div style='background:#f0fdf4;border:1px solid #bbf7d0;"
+                    f"border-radius:8px;padding:8px 12px;margin-bottom:8px;'>"
+                    f"<span style='font-size:11px;font-weight:700;color:#166534;'>"
+                    f"✅ {len(hist)} archivo(s) cargado(s) automáticamente</span></div>",
+                    unsafe_allow_html=True,
+                )
+
+            # ── Panel de archivos disponibles ────────────────────────────────
+            if hist:
+                st.markdown(
+                    "<div style='font-size:11px;font-weight:700;color:#475569;"
+                    "text-transform:uppercase;letter-spacing:.6px;margin:6px 0 4px;'>"
+                    "📁 Archivos disponibles</div>",
                     unsafe_allow_html=True,
                 )
                 meses_disp = sorted(hist.keys())
@@ -3589,6 +3581,31 @@ def main():
                     k: f"{MES_NOMBRES.get(k[5:7], k[5:7])} {k[:4]}"
                     for k in meses_disp
                 }
+                for k in meses_disp:
+                    n   = len(hist[k])
+                    lbl = meses_labels[k]
+                    is_active = (k == sd.get("mes_activo"))
+                    bg = "#eff6ff" if is_active else "#f8fafc"
+                    border = "#93c5fd" if is_active else "#e2e8f0"
+                    badge = "◀ activo" if is_active else ""
+                    st.markdown(
+                        f"<div style='background:{bg};border:1px solid {border};"
+                        f"border-radius:6px;padding:5px 10px;margin-bottom:3px;"
+                        f"font-size:11px;color:#334155;'>"
+                        f"📄 <b>{lbl}</b> · {n} reqs "
+                        f"<span style='color:#3b82f6;font-weight:700;'>{badge}</span></div>",
+                        unsafe_allow_html=True,
+                    )
+
+                st.markdown("<div style='margin-top:8px'></div>", unsafe_allow_html=True)
+
+                # Selector de mes activo
+                st.markdown(
+                    "<div style='font-size:11px;font-weight:700;color:#475569;"
+                    "text-transform:uppercase;letter-spacing:.6px;margin-bottom:3px;'>"
+                    "🔵 Seleccionar archivo activo</div>",
+                    unsafe_allow_html=True,
+                )
                 mes_idx = meses_disp.index(sd["mes_activo"]) if sd["mes_activo"] in meses_disp else 0
                 mes_sel = st.selectbox(
                     "Mes activo",
@@ -3600,40 +3617,87 @@ def main():
                 )
                 sd["mes_activo"] = mes_sel
 
-                # Eliminar mes
-                if len(hist) > 0:
-                    mes_del = st.selectbox(
-                        "Eliminar mes", options=["— no eliminar —"] + meses_disp,
-                        key="w_mes_del",
-                    )
-                    if mes_del != "— no eliminar —":
-                        if st.button(f"🗑 Eliminar {meses_labels.get(mes_del, mes_del)}",
-                                     key="btn_del_mes", use_container_width=True):
-                            del sd["historial_reportes"][mes_del]
-                            if mes_del in sd["historial_meta"]:
-                                del sd["historial_meta"][mes_del]
-                            if sd["mes_activo"] == mes_del:
-                                remaining = [k for k in sd["historial_reportes"]]
-                                sd["mes_activo"] = remaining[0] if remaining else None
-                            st.rerun()
-
-                # Resumen de meses cargados
-                st.markdown("---")
+                # Eliminar archivo
                 st.markdown(
-                    f"<div style='font-size:11px;color:#64748b;'>"
-                    f"📁 <b>{len(hist)}</b> mes(es) cargado(s)</div>",
+                    "<div style='font-size:11px;font-weight:700;color:#475569;"
+                    "text-transform:uppercase;letter-spacing:.6px;margin:8px 0 3px;'>"
+                    "🗑 Eliminar archivo</div>",
                     unsafe_allow_html=True,
                 )
-                for k in sorted(hist.keys()):
-                    n = len(hist[k])
-                    lbl = meses_labels[k]
-                    active_marker = " ◀" if k == sd["mes_activo"] else ""
-                    st.caption(f"• {lbl}: {n} reqs{active_marker}")
+                mes_del = st.selectbox(
+                    "Eliminar", options=["— seleccionar —"] + meses_disp,
+                    key="w_mes_del",
+                    format_func=lambda k: k if k == "— seleccionar —" else meses_labels.get(k, k),
+                    label_visibility="collapsed",
+                )
+                if mes_del != "— seleccionar —":
+                    if st.button(f"🗑 Eliminar {meses_labels.get(mes_del, mes_del)}",
+                                 key="btn_del_mes", use_container_width=True,
+                                 type="secondary"):
+                        del sd["historial_reportes"][mes_del]
+                        if mes_del in sd["historial_meta"]:
+                            del sd["historial_meta"][mes_del]
+                        if sd["mes_activo"] == mes_del:
+                            remaining = [k for k in sd["historial_reportes"]]
+                            sd["mes_activo"] = remaining[0] if remaining else None
+                        _disk_fname = _PLANNER_DIR / f"planner_{mes_del.replace('-', '_')}.xlsx"
+                        if _disk_fname.exists():
+                            try:
+                                _disk_fname.unlink()
+                            except OSError:
+                                pass
+                        st.rerun()
+
             else:
-                st.caption("Sin archivo — sube el primero arriba.")
+                st.info("Sin archivos cargados. Sube el primero abajo.")
+
+            # ── Subir nuevo archivo / Reemplazar ─────────────────────────────
+            st.markdown("<div style='margin-top:4px'></div>", unsafe_allow_html=True)
+            label_expander = "➕ Agregar / Reemplazar reporte mensual"
+            with st.expander(label_expander, expanded=len(sd["historial_reportes"]) == 0):
+                col_yr, col_mn = st.columns(2)
+                with col_yr:
+                    año_sel = st.number_input("Año", min_value=2020, max_value=2030,
+                                              value=2026, step=1, key="w_año_upload")
+                with col_mn:
+                    mes_num = st.selectbox(
+                        "Mes", options=list(MES_NOMBRES.keys()),
+                        format_func=lambda m: MES_NOMBRES[m],
+                        key="w_mes_upload",
+                    )
+                mes_key = f"{año_sel}-{mes_num}"
+                # Indicar si ya existe (reemplazará)
+                if mes_key in sd["historial_reportes"]:
+                    st.warning(f"⚠ Ya existe un reporte para **{MES_NOMBRES[mes_num]} {año_sel}**. "
+                               "Subir uno nuevo lo reemplazará.")
+                uploaded = st.file_uploader(
+                    f"Excel — {MES_NOMBRES[mes_num]} {año_sel}",
+                    type=["xlsx", "xls"], key="w_file_uploader",
+                    help="Exporta desde Microsoft Planner → Exportar a Excel",
+                )
+                if uploaded is not None:
+                    btn_lbl = (f"🔄 Reemplazar {MES_NOMBRES[mes_num]} {año_sel}"
+                               if mes_key in sd["historial_reportes"]
+                               else f"💾 Guardar {MES_NOMBRES[mes_num]} {año_sel}")
+                    if st.button(btn_lbl, key="btn_guardar_mes", use_container_width=True):
+                        with st.spinner("⚙ Procesando..."):
+                            raw = load_data(uploaded)
+                            if not raw.empty:
+                                df_mes, meta_mes = preprocess_data(raw)
+                                sd["historial_reportes"][mes_key] = df_mes
+                                sd["historial_meta"][mes_key] = meta_mes
+                                sd["mes_activo"] = mes_key
+                                disk_path = save_excel_to_disk(uploaded, mes_key)
+                                if disk_path:
+                                    st.success(f"✅ {MES_NOMBRES[mes_num]} {año_sel} guardado · 💾 `{disk_path.name}`")
+                                else:
+                                    st.success(f"✅ {MES_NOMBRES[mes_num]} {año_sel} cargado en memoria")
+                                st.rerun()
+                            else:
+                                st.error("El archivo está vacío o no pudo leerse.")
 
             st.markdown("---")
-            st.caption(f"v6.0 · {datetime.today().strftime('%d/%m/%Y')}")
+            st.caption(f"v6.1 · {datetime.today().strftime('%d/%m/%Y')}")
 
     # 4. Obtener df activo desde historial
     hist = sd["historial_reportes"]

@@ -1,0 +1,22 @@
+{
+  "Eficiencia Operativa": {
+    "meta": 10,
+    "avance": 5
+  },
+  "Datos Confiables": {
+    "meta": 5,
+    "avance": 0
+  },
+  "Excelencia ERP": {
+    "meta": 10,
+    "avance": 0
+  },
+  "Integración": {
+    "meta": 5,
+    "avance": 0
+  },
+  "Seguridad de la Información": {
+    "meta": 80,
+    "avance": 0
+  }
+}
